@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdio.h>
 #include "main.h"
 #include "oled.hpp"
 #include "app_ui.h"
@@ -18,8 +19,74 @@ typedef struct {
     uint8_t classic;
 } UiPopupState;
 
+typedef struct {
+    uint32_t window_started;
+    uint32_t last_frame;
+    uint16_t frames;
+    uint16_t overruns;
+    uint16_t max_interval;
+    uint8_t initialized;
+} UiFrameStats;
+
+typedef struct {
+    uint32_t last_elapsed;
+    uint32_t selected_since;
+    uint32_t move_started;
+    int32_t highlight_from_q8;
+    int32_t highlight_target_q8;
+    uint16_t move_duration;
+    uint8_t selected;
+    uint8_t top;
+    uint8_t count;
+    uint8_t initialized;
+} UiListAnimation;
+
 static UiPopupState s_popup;
+static UiFrameStats s_frame_stats;
+static UiListAnimation s_list_anim;
 static void ui_draw_popup_overlay(uint32_t elapsed, uint32_t duration);
+
+static void ui_record_frame(void)
+{
+    uint32_t now = HAL_GetTick();
+    if (!s_frame_stats.initialized) {
+        s_frame_stats.initialized = 1U;
+        s_frame_stats.window_started = now;
+        s_frame_stats.last_frame = now;
+        s_frame_stats.frames = 1U;
+        return;
+    }
+
+    uint32_t interval = now - s_frame_stats.last_frame;
+    s_frame_stats.last_frame = now;
+    /* 视频播放或阻塞式故障恢复期间没有 UI 动画，重新出现 UI 时开启新窗口，
+     * 不把这段非动画时间误报成掉帧。 */
+    if (interval > 250U) {
+        s_frame_stats.window_started = now;
+        s_frame_stats.frames = 1U;
+        s_frame_stats.overruns = 0U;
+        s_frame_stats.max_interval = 0U;
+        return;
+    }
+    if (interval > s_frame_stats.max_interval) {
+        s_frame_stats.max_interval = interval > UINT16_MAX ? UINT16_MAX : (uint16_t)interval;
+    }
+    if (interval > APP_UI_FRAME_MS && s_frame_stats.overruns < UINT16_MAX)
+        s_frame_stats.overruns++;
+    if (s_frame_stats.frames < UINT16_MAX) s_frame_stats.frames++;
+
+    uint32_t window_ms = now - s_frame_stats.window_started;
+    if (window_ms >= 1000U) {
+        uint32_t fps_x10 = (uint32_t)s_frame_stats.frames * 10000U / window_ms;
+        printf("[UI] fps=%lu.%lu max=%u ms overruns=%u\n",
+               (unsigned long)(fps_x10 / 10U), (unsigned long)(fps_x10 % 10U),
+               s_frame_stats.max_interval, s_frame_stats.overruns);
+        s_frame_stats.window_started = now;
+        s_frame_stats.frames = 0U;
+        s_frame_stats.overruns = 0U;
+        s_frame_stats.max_interval = 0U;
+    }
+}
 
 static void ui_present(void)
 {
@@ -29,6 +96,7 @@ static void ui_present(void)
         else ui_draw_popup_overlay(elapsed, s_popup.duration);
     }
     OLED_Swap_Buffers();
+    ui_record_frame();
 }
 
 static uint8_t ui_tiny_screen(void)
@@ -64,6 +132,19 @@ static void ui_text(int16_t x, int16_t y, const char *text, const char *font)
     for (; *text; ++text, x += step) {
         if (x >= OLED_WIDTH) break;
         if (x >= 0 && (int16_t)(x + step) <= OLED_WIDTH)
+            OLED_Show_Char_ASCII(*text, font, (uint8_t)x, (uint8_t)y);
+    }
+}
+
+static void ui_text_clipped(int16_t x, int16_t y, const char *text, const char *font,
+                            int16_t clip_left, int16_t clip_right)
+{
+    if (text == NULL || y < 0 || y >= OLED_HEIGHT || clip_right <= clip_left) return;
+    uint8_t step = ui_font_w(font);
+    for (; *text; ++text, x += step) {
+        if (x >= clip_right || x >= OLED_WIDTH) break;
+        if (x >= clip_left && x >= 0 && (int16_t)(x + step) <= clip_right &&
+            (int16_t)(x + step) <= OLED_WIDTH)
             OLED_Show_Char_ASCII(*text, font, (uint8_t)x, (uint8_t)y);
     }
 }
@@ -104,13 +185,19 @@ static void ui_panel(int16_t x, int16_t y, int16_t w, int16_t h)
     }
 }
 
+static void ui_progress_scaled(int16_t x, int16_t y, int16_t w,
+                               uint16_t value, uint16_t maximum)
+{
+    if (w < 6 || y < 0 || y + 5 > OLED_HEIGHT || maximum == 0U) return;
+    if (value > maximum) value = maximum;
+    OLED_Draw_Rectang(x, y, w - 1, 4, 0);
+    int16_t fill = (int16_t)((uint32_t)(w - 4) * value / maximum);
+    if (fill > 0) OLED_Draw_Rectang(x + 2, y + 2, fill, 1, 1);
+}
+
 static void ui_progress(int16_t x, int16_t y, int16_t w, uint8_t percent)
 {
-    if (w < 6 || y < 0 || y + 5 > OLED_HEIGHT) return;
-    if (percent > 100U) percent = 100U;
-    OLED_Draw_Rectang(x, y, w - 1, 4, 0);
-    int16_t fill = (int16_t)((uint32_t)(w - 4) * percent / 100U);
-    if (fill > 0) OLED_Draw_Rectang(x + 2, y + 2, fill, 1, 1);
+    ui_progress_scaled(x, y, w, percent > 100U ? 100U : percent, 100U);
 }
 
 /* 与拔卡页完全相同的横向反显：白色区域从左向右扩张，已经扫过的
@@ -220,10 +307,13 @@ void AppUI_RenderAnalyzing(uint32_t elapsed_ms, const char *detail)
     ui_present();
 }
 
-void AppUI_RenderFreeScan(uint8_t percent, uint32_t elapsed_ms)
+void AppUI_RenderFreeScan(uint16_t display_permille, uint16_t target_permille,
+                          uint32_t elapsed_ms)
 {
     if (ui_tiny_screen()) { ui_render_tiny(elapsed_ms); return; }
-    if (percent > 100U) percent = 100U;
+    if (display_permille > 1000U) display_permille = 1000U;
+    if (target_permille > 1000U) target_permille = 1000U;
+    uint8_t percent = (uint8_t)((display_permille + 5U) / 10U);
 
     OLED_GRAM_Clear();
     uint8_t compact = (OLED_HEIGHT < 48U);
@@ -242,13 +332,19 @@ void AppUI_RenderFreeScan(uint8_t percent, uint32_t elapsed_ms)
     int16_t bar_x = x + 8;
     int16_t bar_y = compact ? (int16_t)OLED_HEIGHT - 8 : y + 31;
     int16_t bar_w = w - 16;
-    ui_progress(bar_x, bar_y, bar_w, percent);
+    ui_progress_scaled(bar_x, bar_y, bar_w, display_permille, 1000U);
+    if (bar_w > 6) {
+        int16_t target_x = (int16_t)(bar_x + 2 +
+                           (uint32_t)(bar_w - 4) * target_permille / 1000U);
+        if (target_x >= bar_x + bar_w - 1) target_x = bar_x + bar_w - 2;
+        OLED_Draw_Point((uint8_t)target_x, (uint8_t)(bar_y + 1));
+    }
     if (!compact) ui_text_center(0, y + 43, "OK: Skip", UI_FONT_SMALL);
 
     /* 进度不变时仍有一个往返光点，明确表示系统没有死机。 */
     if (bar_w > 12) {
         int16_t span = bar_w - 6;
-        uint16_t phase = (uint16_t)((elapsed_ms / 24U) % (uint32_t)(span * 2));
+        uint16_t phase = (uint16_t)((elapsed_ms / APP_UI_FRAME_MS) % (uint32_t)(span * 2));
         int16_t pos = (phase <= span) ? (int16_t)phase : (int16_t)(span * 2 - phase);
         OLED_Draw_Point((uint8_t)(bar_x + 3 + pos),
                         (uint8_t)(compact ? bar_y + 7 : y + h - 4));
@@ -360,11 +456,79 @@ void AppUI_RenderInfoPage(uint8_t page, const SD_CardInfo *card,
     ui_present();
 }
 
+static int32_t ui_list_highlight_q8(uint32_t elapsed_ms)
+{
+    uint32_t elapsed = elapsed_ms - s_list_anim.move_started;
+    if (s_list_anim.move_duration == 0U || elapsed >= s_list_anim.move_duration)
+        return s_list_anim.highlight_target_q8;
+
+    uint32_t t = elapsed * 256U / s_list_anim.move_duration;
+    uint32_t eased = 2U * t - (t * t / 256U);
+    int32_t distance = s_list_anim.highlight_target_q8 - s_list_anim.highlight_from_q8;
+    return s_list_anim.highlight_from_q8 + (int32_t)((int64_t)distance * eased / 256);
+}
+
+static int16_t ui_list_prepare_animation(uint8_t count, uint8_t selected, uint8_t top,
+                                         uint8_t y0, uint32_t elapsed_ms)
+{
+    int32_t target_q8 = ((int32_t)y0 + (int32_t)(selected - top) * 9) << 8;
+    uint8_t reset = !s_list_anim.initialized || elapsed_ms < s_list_anim.last_elapsed ||
+                    count != s_list_anim.count || selected < top;
+
+    if (reset) {
+        (void)memset(&s_list_anim, 0, sizeof(s_list_anim));
+        s_list_anim.initialized = 1U;
+        s_list_anim.selected = selected;
+        s_list_anim.top = top;
+        s_list_anim.count = count;
+        s_list_anim.selected_since = elapsed_ms;
+        s_list_anim.move_started = elapsed_ms;
+        s_list_anim.highlight_from_q8 = target_q8;
+        s_list_anim.highlight_target_q8 = target_q8;
+    } else if (selected != s_list_anim.selected || top != s_list_anim.top) {
+        int32_t current_q8 = ui_list_highlight_q8(elapsed_ms);
+        uint8_t rapid_move = (elapsed_ms - s_list_anim.move_started) <= 170U;
+        s_list_anim.selected_since = elapsed_ms;
+        s_list_anim.selected = selected;
+        s_list_anim.count = count;
+        if (top != s_list_anim.top) {
+            s_list_anim.highlight_from_q8 = target_q8;
+            s_list_anim.highlight_target_q8 = target_q8;
+            s_list_anim.move_duration = 0U;
+        } else {
+            s_list_anim.highlight_from_q8 = current_q8;
+            s_list_anim.highlight_target_q8 = target_q8;
+            s_list_anim.move_duration = rapid_move ? 55U : 110U;
+        }
+        s_list_anim.top = top;
+        s_list_anim.move_started = elapsed_ms;
+    }
+    s_list_anim.last_elapsed = elapsed_ms;
+    int32_t y_q8 = ui_list_highlight_q8(elapsed_ms);
+    return (int16_t)((y_q8 + 128) >> 8);
+}
+
+static int16_t ui_selected_name_offset(const char *name, int16_t available_width,
+                                       uint32_t selected_age)
+{
+    int16_t travel = (int16_t)ui_text_width(name, UI_FONT_SMALL) - available_width;
+    if (travel <= 0 || selected_age < 700U) return 0;
+
+    uint32_t move_ms = (uint32_t)travel * 35U;
+    uint32_t cycle_ms = move_ms + 500U + move_ms + 500U;
+    uint32_t phase = (selected_age - 700U) % cycle_ms;
+    if (phase < move_ms) return (int16_t)(phase / 35U);
+    phase -= move_ms;
+    if (phase < 500U) return travel;
+    phase -= 500U;
+    if (phase < move_ms) return (int16_t)(travel - (int16_t)(phase / 35U));
+    return 0;
+}
+
 void AppUI_RenderFileList(const char names[][APP_UI_FILE_NAME_MAX], uint8_t count, uint8_t selected,
                           uint8_t top, uint8_t function_dir, const AppUI_VideoMeta *meta,
                           uint32_t elapsed_ms)
 {
-    (void)elapsed_ms;
     if (ui_tiny_screen()) { ui_render_tiny(elapsed_ms); return; }
     OLED_GRAM_Clear();
     uint8_t y0 = (OLED_HEIGHT >= 24U) ? 11U : 0U;
@@ -378,17 +542,24 @@ void AppUI_RenderFileList(const char names[][APP_UI_FILE_NAME_MAX], uint8_t coun
         ui_text(OLED_WIDTH > 32U ? OLED_WIDTH - 30 : 0, 1, function_dir ? "/FN" : "/", UI_FONT_SMALL);
         OLED_Draw_Line(0, 9, OLED_WIDTH - 1, 0, 0);
     }
+    int16_t name_left = 8;
+    int16_t name_right = OLED_WIDTH > 12U ? OLED_WIDTH - 4 : OLED_WIDTH;
+    int16_t highlight_y = ui_list_prepare_animation(count, selected, top, y0, elapsed_ms);
+    uint32_t selected_age = elapsed_ms - s_list_anim.selected_since;
+
     for (uint8_t row = 0; row < rows; ++row) {
         uint8_t idx = (uint8_t)(top + row);
         if (idx >= count) break;
         uint8_t y = (uint8_t)(y0 + row * 9U);
-        ui_text(8, y, names[idx], UI_FONT_SMALL);
-        if (idx == selected) {
-            OLED_SW_Invert_Rect(2, y, (OLED_WIDTH > 8U) ? OLED_WIDTH - 7 : OLED_WIDTH, 8);
-            OLED_Draw_Line(3, y + 2, 3, 2, 0);
-            OLED_Draw_Line(3, y + 6, 3, -2, 0);
-        }
+        int16_t offset = idx == selected ?
+                         ui_selected_name_offset(names[idx], name_right - name_left, selected_age) : 0;
+        ui_text_clipped(name_left - offset, y, names[idx], UI_FONT_SMALL,
+                        name_left, name_right);
     }
+    OLED_SW_Invert_Rect(2, highlight_y,
+                        (OLED_WIDTH > 8U) ? OLED_WIDTH - 7 : OLED_WIDTH, 8);
+    OLED_Draw_Line(3, highlight_y + 2, 3, 2, 0);
+    OLED_Draw_Line(3, highlight_y + 6, 3, -2, 0);
     if (count > rows && OLED_WIDTH >= 4U) {
         uint8_t track = (uint8_t)(OLED_HEIGHT - y0 - footer);
         uint8_t knob = (uint8_t)((uint16_t)track * rows / count);
@@ -400,16 +571,28 @@ void AppUI_RenderFileList(const char names[][APP_UI_FILE_NAME_MAX], uint8_t coun
     if (footer && meta != NULL && selected < count) {
         char info[28];
         char frame_count[6];
+        uint32_t page_phase = selected_age % 1500U;
+        uint8_t info_page = (uint8_t)((selected_age / 1500U) & 1U);
+        int16_t reveal_right = OLED_WIDTH - 2;
+        if (!meta[selected].valid) {
+            info_page = 0U;
+            page_phase = selected_age < 160U ? selected_age : 160U;
+        }
+        if (page_phase < 160U)
+            reveal_right = (int16_t)(2 + (uint32_t)(OLED_WIDTH - 4) * page_phase / 160U);
         OLED_Draw_Line(0, OLED_HEIGHT - footer - 1, OLED_WIDTH - 1, 0, 0);
         if (meta[selected].valid) {
             ui_format_frame_count(meta[selected].frames, frame_count, sizeof(frame_count));
-            (void)snprintf(info, sizeof(info), "%ux%u %uF %s V%u",
-                           meta[selected].width, meta[selected].height,
-                           meta[selected].fps, frame_count, meta[selected].version);
+            if (info_page == 0U)
+                (void)snprintf(info, sizeof(info), "%ux%u %u fps",
+                               meta[selected].width, meta[selected].height, meta[selected].fps);
+            else
+                (void)snprintf(info, sizeof(info), "%s frames V%u",
+                               frame_count, meta[selected].version);
         } else {
             (void)snprintf(info, sizeof(info), "OVID info N/A");
         }
-        ui_text(2, OLED_HEIGHT - 8, info, UI_FONT_SMALL);
+        ui_text_clipped(2, OLED_HEIGHT - 8, info, UI_FONT_SMALL, 2, reveal_right);
     }
     ui_present();
 }
@@ -597,4 +780,5 @@ void AppUI_RenderPopupTask(void)
     if (AppUI_PopupActive())
         ui_draw_popup_overlay(HAL_GetTick() - s_popup.started, s_popup.duration);
     OLED_Swap_Buffers();
+    ui_record_frame();
 }
