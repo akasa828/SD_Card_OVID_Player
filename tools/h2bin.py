@@ -9,19 +9,21 @@
   2) 一批图片（需要 Pillow），按文件名自然序当作帧序列：
        python h2bin.py from-images frames/ out.bin -W 128 -H 64 --fps 12
 
-输出格式见 Core/function/function.h 的 FN_VideoHeader（16 字节小端头 + 帧数据）：
+默认输出 OVID v2；加 --v1 可生成旧格式。两者都使用 16 字节小端头：
 
     offset size  字段
     0      4     magic "OVID"
     4      1     width   帧宽（像素）
     5      1     height  帧高（像素）
-    6      2     rsv0    保留，写 0
+    6      1     version v1=0，v2=2
+    7      1     flags   v2 bit0=帧 CRC32
     8      4     frame_count 总帧数
     12     2     fps     播放帧率（1~120）
-    14     2     rsv1    保留，写 0
+    14     2     v2 头部 CRC16-CCITT；v1 为 0
 
-帧数据紧随其后，每帧 ceil(height/8)*width 字节，SSD1306 页主序
+帧数据紧随其后，每帧 ceil(height/8)*width 字节，OLED 页主序
 （先第 0 页的第 0..width-1 列，再第 1 页……），与 OLED_Draw_Bitmap 的入参布局一致。
+OVID v2 每帧数据后再附加 4 字节小端 CRC32；固件发现坏帧时保持上一帧继续播放。
 
 固件是否能播放由 OLED_WIDTH/OLED_HEIGHT 及 MCU RAM 决定，工具不再设 1024 B 上限。
 """
@@ -30,10 +32,30 @@ import argparse
 import re
 import struct
 import sys
+import zlib
 from pathlib import Path
 
 MAGIC = b"OVID"
 HEADER_SIZE = 16
+OVID_V1 = 0
+OVID_V2 = 2
+OVID_FLAG_CRC32 = 0x01
+
+
+def crc16_ccitt(data: bytes) -> int:
+    crc = 0xFFFF
+    for value in data:
+        crc ^= value << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def make_header(width: int, height: int, count: int, fps: int, version: int) -> bytes:
+    flags = OVID_FLAG_CRC32 if version == OVID_V2 else 0
+    first14 = struct.pack("<4sBBBBIH", MAGIC, width, height, version, flags, count, fps)
+    header_crc = crc16_ccitt(first14) if version == OVID_V2 else 0
+    return first14 + struct.pack("<H", header_crc)
 
 
 def frame_bytes(width: int, height: int) -> int:
@@ -52,7 +74,8 @@ def print_firmware_requirements(width: int, height: int) -> None:
               file=sys.stderr)
 
 
-def write_ovid(out_path: Path, frames, width: int, height: int, fps: int) -> None:
+def write_ovid(out_path: Path, frames, width: int, height: int, fps: int,
+               version: int = OVID_V2) -> None:
     """把 frames（bytes 的可迭代对象）写成 OVID 文件。
 
     先占位写头部，流式写完帧后回填 frame_count —— 这样无需把整个视频读进内存，
@@ -62,10 +85,12 @@ def write_ovid(out_path: Path, frames, width: int, height: int, fps: int) -> Non
         raise ValueError("宽高须在 1~255（OVID v1 字段各占 1 字节）")
     if not 1 <= fps <= 120:
         raise ValueError("fps 须在 1~120")
+    if version not in (OVID_V1, OVID_V2):
+        raise ValueError("OVID 版本只能是 v1 或 v2")
     expect = frame_bytes(width, height)
     count = 0
     with out_path.open("wb") as f:
-        f.write(struct.pack("<4sBB2sIH2s", MAGIC, width, height, b"\0\0", 0, fps, b"\0\0"))
+        f.write(make_header(width, height, 0, fps, version))
         for data in frames:
             if len(data) != expect:
                 raise ValueError(
@@ -73,16 +98,18 @@ def write_ovid(out_path: Path, frames, width: int, height: int, fps: int) -> Non
                     f"应有的 {expect} 字节不符"
                 )
             f.write(data)
+            if version == OVID_V2:
+                f.write(struct.pack("<I", zlib.crc32(data) & 0xFFFFFFFF))
             count += 1
         if count == 0:
             raise ValueError("没有取到任何帧")
-        # 回填真实帧数
-        f.seek(8)
-        f.write(struct.pack("<I", count))
+        f.seek(0)
+        f.write(make_header(width, height, count, fps, version))
 
-    size = HEADER_SIZE + count * expect
+    size = HEADER_SIZE + count * (expect + (4 if version == OVID_V2 else 0))
     print(f"已写出 {out_path}")
-    print(f"  {width}x{height}  {count} 帧  {fps} fps  每帧 {expect} B  合计 {size / 1024 / 1024:.2f} MB")
+    print(f"  OVID v{2 if version == OVID_V2 else 1}  {width}x{height}  {count} 帧  "
+          f"{fps} fps  每帧 {expect} B  合计 {size / 1024 / 1024:.2f} MB")
     print_firmware_requirements(width, height)
     print(f"  时长约 {count / fps:.1f} 秒")
 
@@ -178,7 +205,8 @@ def cmd_from_header(args) -> int:
         if pending:
             raise ValueError(f"有 {len(pending)} 帧顺序错乱未能输出")
 
-    write_ovid(Path(args.out), frames(), args.width, args.height, args.fps)
+    write_ovid(Path(args.out), frames(), args.width, args.height, args.fps,
+               OVID_V1 if args.v1 else OVID_V2)
     return 0
 
 
@@ -250,7 +278,8 @@ def cmd_from_images(args) -> int:
             if not args.quiet and i % 100 == 0:
                 print(f"  已处理 {i}/{len(files)}")
 
-    write_ovid(Path(args.out), frames(), args.width, args.height, args.fps)
+    write_ovid(Path(args.out), frames(), args.width, args.height, args.fps,
+               OVID_V1 if args.v1 else OVID_V2)
     return 0
 
 
@@ -264,7 +293,7 @@ def cmd_info(args) -> int:
     if len(raw) < HEADER_SIZE:
         print("错误：文件太短，不足 16 字节头部", file=sys.stderr)
         return 1
-    magic, w, h, _, count, fps, _ = struct.unpack("<4sBB2sIH2s", raw)
+    magic, w, h, version, flags, count, fps, header_crc = struct.unpack("<4sBBBBIHH", raw)
     if magic != MAGIC:
         print(f"错误：magic 是 {magic!r}，不是 {MAGIC!r}", file=sys.stderr)
         return 1
@@ -273,15 +302,38 @@ def cmd_info(args) -> int:
         print(f"错误：头部字段非法（{w}x{h}, {count} 帧, {fps} fps）", file=sys.stderr)
         return 1
 
-    per = frame_bytes(w, h)
-    actual = p.stat().st_size - HEADER_SIZE
-    print(f"{p.name}: {w}x{h}  {count} 帧  {fps} fps  每帧 {per} B")
-    print_firmware_requirements(w, h)
-    if actual != count * per:
-        print(f"  警告：数据区 {actual} B，与 {count}×{per}={count * per} B 不符 "
-              f"(差 {actual - count * per})", file=sys.stderr)
+    is_v1 = version == OVID_V1 and flags == 0 and header_crc == 0
+    is_v2 = (version == OVID_V2 and flags == OVID_FLAG_CRC32 and
+             header_crc == crc16_ccitt(raw[:14]))
+    if not is_v1 and not is_v2:
+        print(f"错误：OVID 版本/flags/header CRC 非法（version={version}, flags={flags:#x}）",
+              file=sys.stderr)
         return 1
-    print("  头部与数据长度一致")
+
+    per = frame_bytes(w, h)
+    record = per + (4 if is_v2 else 0)
+    actual = p.stat().st_size - HEADER_SIZE
+    print(f"{p.name}: OVID v{2 if is_v2 else 1}  {w}x{h}  {count} 帧  {fps} fps  每帧 {per} B")
+    print_firmware_requirements(w, h)
+    if actual != count * record:
+        print(f"  警告：数据区 {actual} B，与 {count}×{record}={count * record} B 不符 "
+              f"(差 {actual - count * record})", file=sys.stderr)
+        return 1
+    if is_v2:
+        bad = 0
+        with p.open("rb") as stream:
+            stream.seek(HEADER_SIZE)
+            for _ in range(count):
+                frame = stream.read(per)
+                stored = struct.unpack("<I", stream.read(4))[0]
+                if stored != (zlib.crc32(frame) & 0xFFFFFFFF):
+                    bad += 1
+        if bad:
+            print(f"  错误：{bad} 帧 CRC32 不匹配", file=sys.stderr)
+            return 1
+        print("  头部 CRC16、文件长度和全部帧 CRC32 正确")
+    else:
+        print("  v1 头部与数据长度一致（v1 无内容 CRC）")
     return 0
 
 
@@ -299,6 +351,8 @@ def main() -> int:
         p.add_argument("-H", "--height", type=int, default=64, help="帧高，默认 64")
         p.add_argument("--fps", type=int, default=15,
                        help="播放帧率 1~120，默认 15")
+        p.add_argument("--v1", action="store_true",
+                       help="生成兼容旧固件的 OVID v1；默认生成带 CRC 的 v2")
         p.add_argument("--limit", type=int, default=0, help="只取前 N 帧（调试用）")
         p.add_argument("-q", "--quiet", action="store_true", help="少打日志")
 

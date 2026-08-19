@@ -663,7 +663,7 @@ void OLED_Test_All(void)
     OLED_Set_Rotation(OLED_ROT_0);
     OLED_Select_Buffer(0);
     OLED_GRAM_Clear();
-    OLED_Show_String("ALL TESTS", "1608", 10, 16);
-    OLED_Show_String("DONE!", "1608", 38, 36);
+    OLED_Show_String("All tests", "1608", 10, 16);
+    OLED_Show_String("Done!", "1608", 38, 36);
     OLED_GRAM_Refresh();
 }

@@ -35,12 +35,20 @@ extern "C" {
 extern I2C_HandleTypeDef hi2c1;
 
 /* USER CODE BEGIN Private defines */
+#ifndef I2C1_INITIAL_CLOCK_HZ
+#define I2C1_INITIAL_CLOCK_HZ 1399999UL
+#endif
 
 /* USER CODE END Private defines */
 
 void MX_I2C1_Init(void);
 
 /* USER CODE BEGIN Prototypes */
+void I2C1_AdaptiveFailure(uint8_t timeout_failure);
+void I2C1_AdaptiveSuccess(void);
+uint32_t I2C1_GetClockHz(void);
+uint32_t I2C1_GetErrorCount(void);
+uint32_t I2C1_GetTimeoutCount(void);
 
 /* USER CODE END Prototypes */
 

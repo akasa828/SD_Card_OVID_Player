@@ -26,6 +26,9 @@ extern "C" {
 #ifndef FN_MAX_FILES
 #define FN_MAX_FILES   32U
 #endif
+#ifndef FN_NAME_MAX
+#define FN_NAME_MAX    64U
+#endif
 /* 优先扫描的视频目录；不存在或无 .BIN 时回退到根目录。 */
 #ifndef FN_DIR_NAME
 #define FN_DIR_NAME    "function"
@@ -45,15 +48,19 @@ extern "C" {
 #define FN_MAGIC1 'V'
 #define FN_MAGIC2 'I'
 #define FN_MAGIC3 'D'
+#define FN_OVID_V1          0U
+#define FN_OVID_V2          2U
+#define FN_OVID_FLAG_CRC32  0x01U
 
 typedef struct {
     uint8_t  magic[4];     /* "OVID" */
     uint8_t  width;        /* 帧宽（像素） */
     uint8_t  height;       /* 帧高（像素） */
-    uint8_t  rsv0[2];
+    uint8_t  version;       /* 0=v1 legacy, 2=v2 */
+    uint8_t  flags;         /* v2: bit0=每帧后附 CRC32 */
     uint32_t frame_count;  /* 总帧数 */
     uint16_t fps;          /* 播放帧率，合法范围 1~120 */
-    uint8_t  rsv1[2];
+    uint16_t header_crc16; /* v2: 前 14 字节 CRC16-CCITT；v1 为 0 */
 } FN_VideoHeader;          /* sizeof = 16 */
 
 //========== 对外接口 ==============

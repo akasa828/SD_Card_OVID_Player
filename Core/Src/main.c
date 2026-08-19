@@ -31,6 +31,7 @@
 #include "sd_debug.h"
 #include "function.h"
 #include "oled.hpp"
+#include "system_diag.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -107,6 +108,9 @@ int main(void)
   OLED_Init();
 
   SD_Debug_UART_Init();    // 调试串口 USART1 PA9@115200，printf 重定向（无 OLED 也能看信息）
+
+  SystemDiag_BootInit();
+  SystemDiag_WatchdogInit();
 
   /* 不在 main() 提前初始化 SD；卡信息在统一流程挂载成功后打印。 */
   printf("[BOOT] Waiting for SD card...\n");

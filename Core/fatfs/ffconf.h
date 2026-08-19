@@ -85,13 +85,13 @@
 /---------------------------------------------------------------------------*/
 
 #define FF_CODE_PAGE	437
-/* 改 936(GBK,大 DBCS 表) → 437(US ASCII, 表极小)，为 64KB flash 省空间。
- * 文件名走 ASCII 8.3。若以后换大 flash 且需中文名，再改回 936 并开 LFN。
+/* 使用 437(US/Western) 控制代码表大小；LFN 已开启，但 OLED 仅有 ASCII 字库。
+ * 若以后需要中文 API 文件名，需改代码页/Unicode 配置并增加中文字模。
  * 可选值：437 US / 850 Latin1 / 932 日 / 936 简中 / 949 韩 / 950 繁中 / 0 全部。 */
 
 
-#define FF_USE_LFN		0
-#define FF_MAX_LFN		255
+#define FF_USE_LFN		1
+#define FF_MAX_LFN		63
 /* The FF_USE_LFN switches the support for LFN (long file name).
 /
 /   0: Disable LFN. FF_MAX_LFN has no effect.
@@ -122,7 +122,7 @@
 /  When LFN is not enabled, this option has no effect. */
 
 
-#define FF_LFN_BUF		255
+#define FF_LFN_BUF		63
 #define FF_SFN_BUF		12
 /* This set of options defines size of file name members in the FILINFO structure
 /  which is used to read out directory items. These values should be suffcient for

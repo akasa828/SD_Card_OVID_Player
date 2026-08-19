@@ -862,7 +862,7 @@ int SD_Show_Info_Card(SD_Card *card)
             }
             OLED_GRAM_Clear();
             OLED_Show_String("SD Card", "1206", 0, 0);         /* 大字标题，醒目 */
-            OLED_Show_String("NOT READY", "1206", 0, 16);
+            OLED_Show_String("Not ready", "1206", 0, 16);
             OLED_Show_String(reason, "0806", 0, 36);           /* 失败原因（已控制宽度） */
             OLED_Show_String("Check card & wiring", "0806", 0, 48);
             OLED_GRAM_Refresh();
@@ -939,7 +939,7 @@ int SD_Self_Test_Card(SD_Card *card, uint32_t test_block)
     int type = SD_Init_Card(card);
     if (type <= 0)
     {
-        OLED_Show_String("Init FAIL", "0806", 0, 16);
+        OLED_Show_String("Init failed", "0806", 0, 16);
         OLED_GRAM_Refresh();
         return SD_ERR;
     }
@@ -947,7 +947,7 @@ int SD_Self_Test_Card(SD_Card *card, uint32_t test_block)
     OLED_GRAM_Refresh();
     if (SD_Read_Block_Card(card, test_block, save) != SD_OK)
     {
-        OLED_Show_String("Save FAIL", "0806", 0, 32);
+        OLED_Show_String("Save failed", "0806", 0, 32);
         OLED_GRAM_Refresh();
         return SD_ERR;
     }
@@ -955,7 +955,7 @@ int SD_Self_Test_Card(SD_Card *card, uint32_t test_block)
     if (SD_Write_Block_Card(card, test_block, wbuf) != SD_OK)
     {
         (void)SD_Write_Block_Card(card, test_block, save);
-        OLED_Show_String("Write FAIL", "0806", 0, 32);
+        OLED_Show_String("Write failed", "0806", 0, 32);
         OLED_GRAM_Refresh();
         return SD_ERR;
     }
@@ -963,24 +963,24 @@ int SD_Self_Test_Card(SD_Card *card, uint32_t test_block)
     if (SD_Read_Block_Card(card, test_block, rbuf) != SD_OK)
     {
         (void)SD_Write_Block_Card(card, test_block, save);
-        OLED_Show_String("Read FAIL", "0806", 0, 32);
+        OLED_Show_String("Read failed", "0806", 0, 32);
         OLED_GRAM_Refresh();
         return SD_ERR;
     }
     if (memcmp(wbuf, rbuf, SD_BLOCK_SIZE) != 0)
     {
         (void)SD_Write_Block_Card(card, test_block, save);
-        OLED_Show_String("Verify FAIL", "0806", 0, 32);
+        OLED_Show_String("Verify failed", "0806", 0, 32);
         OLED_GRAM_Refresh();
         return SD_ERR;
     }
     if (SD_Write_Block_Card(card, test_block, save) != SD_OK)
     {
-        OLED_Show_String("Restore FAIL", "0806", 0, 40);
+        OLED_Show_String("Restore failed", "0806", 0, 40);
         OLED_GRAM_Refresh();
         return SD_ERR;
     }
-    OLED_Show_String("ALL PASS", "1206", 0, 32);
+    OLED_Show_String("All passed", "1206", 0, 32);
     OLED_GRAM_Refresh();
     return SD_OK;
 }
