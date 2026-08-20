@@ -1,5 +1,9 @@
 <a id="top"></a>
 
+<p align="center">
+  <strong>中文</strong> · <a href="README_EN.md">English</a>
+</p>
+
 <div align="center">
 
 # SD Card OVID Player
