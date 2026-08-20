@@ -22,6 +22,7 @@
 #define APP_RESCAN_MS       1200U
 #define APP_DIR_SCAN_TIMEOUT_MS 5000U
 #define APP_DIR_SCAN_ENTRY_LIMIT 8192UL
+#define APP_KEY_CHORD_MS      80U
 
 //==================== 按键事件（EXTI 回调里置位，主循环消费）====================
 /* 三个独立标志，volatile（中断与主循环共享）。带 tick 去抖避免抖动多触发。 */
@@ -93,6 +94,7 @@ static uint8_t s_dir_scan_active;
 static uint8_t s_dir_scan_aborted;
 static uint8_t s_free_scan_skipped;
 static uint8_t s_last_selected;
+static uint8_t s_inverse_playback;               /* 仅播放期间启用 OLED 硬件反显 */
 
 static void frame_delay(uint32_t frame_start);
 
@@ -621,6 +623,83 @@ static uint8_t ui_list_rows(void)
     return rows > 0U ? rows : 1U;
 }
 
+typedef struct {
+    uint32_t pending_started;
+    uint8_t pending;       /* 1=up, 2=down */
+    uint8_t latched;       /* 组合键释放前不重复切换 */
+} InverseChordState;
+
+static void inverse_chord_toggle(InverseChordState *state,
+                                 KeyRepeatState *repeat_up,
+                                 KeyRepeatState *repeat_down)
+{
+    s_inverse_playback ^= 1U;
+    state->pending = 0U;
+    state->latched = 1U;
+    s_key_up = 0U;
+    s_key_down = 0U;
+    (void)memset(repeat_up, 0, sizeof(*repeat_up));
+    (void)memset(repeat_down, 0, sizeof(*repeat_down));
+    printf("[PLAYER] inverse playback %s\n", s_inverse_playback ? "on" : "off");
+}
+
+static void library_navigation_take(InverseChordState *state,
+                                    KeyRepeatState *repeat_up,
+                                    KeyRepeatState *repeat_down,
+                                    uint8_t *move_up, uint8_t *move_down)
+{
+    uint32_t now = HAL_GetTick();
+    uint8_t up_pressed = HAL_GPIO_ReadPin(FN_KEY_PORT, FN_KEY_UP_PIN) == GPIO_PIN_RESET;
+    uint8_t down_pressed = HAL_GPIO_ReadPin(FN_KEY_PORT, FN_KEY_DOWN_PIN) == GPIO_PIN_RESET;
+    *move_up = 0U;
+    *move_down = 0U;
+
+    if (state->latched) {
+        s_key_up = 0U;
+        s_key_down = 0U;
+        if (!up_pressed && !down_pressed) state->latched = 0U;
+        return;
+    }
+
+    /* 同时按住时优先按实际电平判断，不依赖两个 EXTI 事件的到达顺序。 */
+    if (up_pressed && down_pressed) {
+        inverse_chord_toggle(state, repeat_up, repeat_down);
+        return;
+    }
+
+    if (state->pending != 0U && now - state->pending_started >= APP_KEY_CHORD_MS) {
+        if (state->pending == 1U) *move_up = 1U;
+        else *move_down = 1U;
+        state->pending = 0U;
+    }
+
+    uint8_t up_event = key_take(&s_key_up);
+    uint8_t down_event = key_take(&s_key_down);
+    if ((up_event && down_event) ||
+        (state->pending == 1U && down_event) ||
+        (state->pending == 2U && up_event)) {
+        inverse_chord_toggle(state, repeat_up, repeat_down);
+        *move_up = 0U;
+        *move_down = 0U;
+        return;
+    }
+
+    if (state->pending == 0U) {
+        if (up_event) {
+            state->pending = 1U;
+            state->pending_started = now;
+        } else if (down_event) {
+            state->pending = 2U;
+            state->pending_started = now;
+        }
+    }
+
+    if (state->pending == 0U) {
+        *move_up |= key_repeat_take(FN_KEY_UP_PIN, repeat_up);
+        *move_down |= key_repeat_take(FN_KEY_DOWN_PIN, repeat_down);
+    }
+}
+
 static uint8_t ui_select_file(uint8_t *sel_out)
 {
     SystemDiag_SetState(APP_STATE_LIBRARY);
@@ -629,14 +708,16 @@ static uint8_t ui_select_file(uint8_t *sel_out)
     uint8_t top = 0U, misses = 0U;
     uint8_t rows = ui_list_rows();
     KeyRepeatState repeat_up = {0}, repeat_down = {0};
+    InverseChordState inverse_chord = {0};
     uint32_t started = HAL_GetTick();
     uint32_t next_probe = started + APP_CARD_PROBE_MS;
 
     s_key_ok = 0U;
     for (;;) {
         uint32_t frame = HAL_GetTick();
-        uint8_t move_up = key_take(&s_key_up) || key_repeat_take(FN_KEY_UP_PIN, &repeat_up);
-        uint8_t move_down = key_take(&s_key_down) || key_repeat_take(FN_KEY_DOWN_PIN, &repeat_down);
+        uint8_t move_up, move_down;
+        library_navigation_take(&inverse_chord, &repeat_up, &repeat_down,
+                                &move_up, &move_down);
         if (move_up && s_file_cnt > 0U)
             sel = sel == 0U ? (uint8_t)(s_file_cnt - 1U) : (uint8_t)(sel - 1U);
         if (move_down && s_file_cnt > 0U)
@@ -651,7 +732,7 @@ static uint8_t ui_select_file(uint8_t *sel_out)
             return 1U;
         }
         AppUI_RenderFileList(s_names, s_file_cnt, sel, top,
-                             s_use_function_dir, s_meta, frame - started);
+                             s_inverse_playback, s_meta, frame - started);
         if ((int32_t)(frame - next_probe) >= 0) {
             if (!probe_card(&misses)) return 0U;
             next_probe = frame + APP_CARD_PROBE_MS;
@@ -733,6 +814,21 @@ static FRESULT read_frame(FIL *f, const FN_VideoHeader *hdr, uint32_t fbytes,
     return FR_OK;
 }
 
+static void playback_restore_inverse(uint8_t *inverse_active)
+{
+    if (inverse_active == NULL || *inverse_active == 0U) return;
+    OLED_Wait_DMA();
+    OLED_Set_Inverse(0U);
+    OLED_Wait_DMA();
+    *inverse_active = 0U;
+}
+
+static void playback_close(FIL *file, uint8_t *inverse_active)
+{
+    playback_restore_inverse(inverse_active);
+    (void)f_close(file);
+}
+
 /**
  * @brief 播放一个 .bin 视频文件
  * @note  读 16B 头部校验 magic/尺寸 → 循环读帧画到 OLED（居中）→ 按 fps 控帧。
@@ -744,6 +840,7 @@ static void play_video(const char *fname)
     FIL f;
     FN_VideoHeader hdr;
     UINT br;
+    uint8_t inverse_active = 0U;
     char path[FN_NAME_MAX + 16U];
     make_video_path(path, fname);
     SystemDiag_SetState(APP_STATE_PLAYBACK);
@@ -763,7 +860,7 @@ static void play_video(const char *fname)
         hdr.magic[0] != FN_MAGIC0 || hdr.magic[1] != FN_MAGIC1 ||
         hdr.magic[2] != FN_MAGIC2 || hdr.magic[3] != FN_MAGIC3)
     {
-        (void)f_close(&f);
+        playback_close(&f, &inverse_active);
         if (fr != FR_OK && is_media_error(fr)) media_invalidate("header", fr);
         else AppUI_ShowPopup("Bad OVID", fname, APP_UI_POPUP_MS);
         return;
@@ -782,7 +879,7 @@ static void play_video(const char *fname)
         hdr.frame_count == 0U || hdr.fps < 1U || hdr.fps > 120U ||
         (!is_v1 && !is_v2) || expected_size != actual_size)
     {
-        (void)f_close(&f);
+        playback_close(&f, &inverse_active);
         AppUI_ShowPopup((hdr.width > OLED_WIDTH || hdr.height > OLED_HEIGHT) ?
                         "Frame too big" : "Invalid OVID", fname, APP_UI_POPUP_MS);
         printf("[PLAYER] reject %s: v=%u flags=%u %ux%u frames=%lu fps=%u frame=%lu file=%lu size_bad=%u\n",
@@ -802,7 +899,7 @@ static void play_video(const char *fname)
     {
         fr = f_lseek(&f, sizeof(hdr));
         if (fr != FR_OK) {
-            (void)f_close(&f);
+            playback_close(&f, &inverse_active);
             if (is_media_error(fr)) media_invalidate("seek", fr);
             else AppUI_ShowPopup("Seek failed", fname, APP_UI_POPUP_MS);
             return;
@@ -813,13 +910,13 @@ static void play_video(const char *fname)
             uint32_t calculated_crc = 0U;
             SystemDiag_FeedWatchdog();
             if (key_take(&s_key_ok)) {
-                (void)f_close(&f);
+                playback_close(&f, &inverse_active);
                 AppUI_ShowClassicPopup("Library", "Playback stopped", APP_UI_POPUP_MS);
                 return;
             }
             fr = read_frame(&f, &hdr, fbytes, ox, oy, &calculated_crc);
             if (fr != FR_OK) {
-                (void)f_close(&f);
+                playback_close(&f, &inverse_active);
                 if (is_media_error(fr)) media_invalidate("frame", fr);
                 else AppUI_ShowPopup("Read failed", fname, APP_UI_POPUP_MS);
                 return;
@@ -829,7 +926,7 @@ static void play_video(const char *fname)
                 uint32_t stored_crc = 0U;
                 fr = f_read(&f, &stored_crc, sizeof(stored_crc), &br);
                 if (fr != FR_OK || br != sizeof(stored_crc)) {
-                    (void)f_close(&f);
+                    playback_close(&f, &inverse_active);
                     if (fr != FR_OK && is_media_error(fr)) media_invalidate("frame CRC", fr);
                     else AppUI_ShowPopup("Read failed", "Missing frame CRC", APP_UI_POPUP_MS);
                     return;
@@ -847,6 +944,13 @@ static void play_video(const char *fname)
             }
 
             OLED_Swap_Buffers();
+            if (s_inverse_playback && inverse_active == 0U) {
+                /* 第一帧完整发送后再切换硬件反显，避免 Loading 弹窗被反显。 */
+                OLED_Wait_DMA();
+                OLED_Set_Inverse(1U);
+                OLED_Wait_DMA();
+                inverse_active = 1U;
+            }
             uint32_t period = 1000U / hdr.fps;
             fraction = (uint16_t)(fraction + (1000U % hdr.fps));
             if (fraction >= hdr.fps) { period++; fraction = (uint16_t)(fraction - hdr.fps); }
