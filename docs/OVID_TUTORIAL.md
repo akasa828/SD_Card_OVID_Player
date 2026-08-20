@@ -91,9 +91,9 @@ python tools/merge_img2lcd.py img2lcd_c/ merged_frames.h
 ```
 ![alt text](images/image-19.png)
 
-修改之后的我的指令就变成了这样：
-```python
-python C:\Essential\03-嵌入式与电子工程\Embedded\stm32\workspace\SD_Card_OVID_Player\tools\merge_img2lcd.py C:\Users\riochihao\Downloads\emojis\batch C:\Users\riochihao\Downloads\emojis\gif.h
+如果帧目录不在仓库中，可以给输入和输出路径加上引号：
+```bash
+python tools/merge_img2lcd.py "<Img2Lcd batch 文件夹>" "<输出头文件路径>"
 ```
 ![alt text](images/image-20.png)
 合并工具只读取该目录第一层的 `.c` 文件，并按自然顺序排列
@@ -105,9 +105,9 @@ python C:\Essential\03-嵌入式与电子工程\Embedded\stm32\workspace\SD_Card
 ```bash
 python tools/h2bin.py merged_frames.h OUTPUT.BIN -W 128 -H 64 --fps 15
 ```
-同理，我运行的时候就是
-```python
-python C:\Essential\03-嵌入式与电子工程\Embedded\stm32\workspace\SD_Card_OVID_Player\tools\h2bin.py C:\Users\riochihao\Downloads\emojis\gif.h GIF_15.BIN -W 128 -H 64 --fps 15
+输入和输出位于其他目录时，同样给路径加上引号：
+```bash
+python tools/h2bin.py "<合并后的头文件>" "<输出 BIN 路径>" -W 128 -H 64 --fps 15
 ```
 
 宽高必须与 Img2Lcd 取模时一致。脚本会检查每个数组是否正好等于 `ceil(height/8) × width`，并报告帧数、单帧字节数、总时长和固件至少需要的 OLED 宏。

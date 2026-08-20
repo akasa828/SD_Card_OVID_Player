@@ -23,15 +23,18 @@
 
 <p>
   <a href="https://github.com/akasa828/SD_Card_OVID_Player">GitHub 仓库</a> ·
-  <a href="https://github.com/akasa828/SD_Card_OVID_Player/archive/refs/heads/main.zip">下载 ZIP</a>
+  <a href="https://github.com/akasa828/SD_Card_OVID_Player/archive/refs/heads/main.zip">下载源码 ZIP</a> ·
+  <a href="https://github.com/akasa828/SD_Card_OVID_Player/releases/latest">最新 Release</a>
 </p>
 
 </div>
 
 > [!TIP]
-> 可直接用于测试播放和错误处理的示例 `.BIN` 文件已打包，仅在 [GitHub Releases](https://github.com/akasa828/SD_Card_OVID_Player/releases) 中提供下载。
+> 可直接用于测试播放和错误处理的示例 `.BIN` 文件已打包，仅在 [GitHub Releases](https://github.com/akasa828/SD_Card_OVID_Player/releases/latest) 中提供下载。
 
-SD Card OVID Player 运行在 STM32F103C8T6 上。视频文件存放在 Micro SD 卡中，固件负责浏览和校验文件，再按照文件头中的帧率将画面输出到 SSD1306 或 SH1106 单色 OLED。播放过程只需要三个按键，不依赖电脑或网络。这里使用的 OVID 可以理解为 OLED Video，它是一种给单色屏准备的帧数据格式。
+SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频播放器。视频文件存放在 SPI Micro SD 卡中，由 FatFs 负责文件访问，固件完成文件浏览和校验后，再按照文件头中的帧率将画面输出到 SSD1306 或 SH1106 单色 OLED。播放过程只需要三个按键，不依赖电脑或网络。这里使用的 OVID 可以理解为 OLED Video，它是一种给单色屏准备的帧数据格式。
+
+工程使用 CMake 构建，并提供面向 VS Code、STM32 官方扩展和 ST-Link 的配置；下载完整源码后，可以直接在 VS Code 中构建、刷写和调试。
 
 这是一个个人学习和实验性质的嵌入式项目，目前仅在 STM32F103C8T6、SSD1306 OLED 和 SPI Micro SD 模块的组合上进行测试。
 
@@ -120,10 +123,12 @@ OLED 不再只是简单地显示几个字符，而是逐渐加入了画点、画
 ## 🖼️ UI 展示
 
 <p align="center">
-  <img src="docs/images/mmexport1787248540213%20(1).gif" alt="SD Card OVID Player UI 展示" width="640">
+  <img src="docs/images/mmexport1787248540213%20(1).gif" alt="SD Card OVID Player 实机运行演示" width="640"><br>
+  <sub>实机运行与 OLED 播放效果</sub>
 </p>
 <p align="center">
-  <img src="docs/images/MP4_20260821_021752VLOG.gif" alt="SD Card OVID Player UI 展示" width="640">
+  <img src="docs/images/MP4_20260821_021752VLOG.gif" alt="SD Card OVID Player 等待插卡与启动界面" width="640"><br>
+  <sub>等待插卡与启动 UI</sub>
 </p>
 
 <a id="features"></a>
@@ -140,6 +145,19 @@ OLED 不再只是简单地显示几个字符，而是逐渐加入了画点、画
 
 > [!NOTE]
 > 遇到 SD 超时或 I2C/DMA 故障恢复时，动画流畅度会暂时让位给可靠性。
+
+### 🧩 可以单独参考的部分
+
+如果你不需要完整播放器，也可以直接参考仓库中的这些模块：
+
+| 内容 | 位置 |
+|---|---|
+| SSD1306/SH1106 OLED 绘图、双缓冲与 I2C DMA 驱动 | `STM32F103/Core/OLED/` |
+| SPI Micro SD 驱动与 FatFs `diskio` 对接 | `STM32F103/Core/Micro_SD/`、`STM32F103/Core/fatfs/` |
+| Img2Lcd 帧合并与 OVID 打包、校验工具 | `tools/` |
+| VS Code、CMake 与 ST-Link 构建调试配置 | `SD_Card_OVID_Player.code-workspace`、`STM32F103/.vscode/`、`STM32F103/CMakePresets.json` |
+
+这些代码可以作为移植参考，但换用其他 STM32 型号或引脚时，仍需调整 HAL 外设句柄、GPIO 和时钟配置。
 
 ---
 
@@ -159,7 +177,7 @@ OLED 不再只是简单地显示几个字符，而是逐渐加入了画点、画
 8. **插卡并播放。** 将 `DEMO.BIN` 放入 `/function`，插卡并复位。三张卡信息页结束后，用上下键选择文件，按确认键播放；播放中再次按确认键返回列表。
 
 > [!NOTE]
-> 首次配置需要联网下载项目声明的 STM32 工具 bundles。目前 GitHub Releases 只发布 `v1.2.2`，仓库暂未提供演示视频。
+> 首次配置需要联网下载项目声明的 STM32 工具 bundles。目前 GitHub Releases 只发布 `v1.2.2`；用于测试播放和错误处理的示例 `.BIN` 文件请从 [最新 Release](https://github.com/akasa828/SD_Card_OVID_Player/releases/latest) 下载。
 
 <a id="hardware"></a>
 
