@@ -484,7 +484,7 @@ static void run_diagnostics_if_requested(void)
             if (page == 1U && g_sd_card.info.initialized) {
 #if SD_ENABLE_SELF_TEST
                 uint32_t test_block = g_sd_card.info.block_count > 8193U ? 8192U : 1U;
-                AppUI_ShowPopup("SD read/write", "Testing and restoring", APP_UI_POPUP_MS);
+                AppUI_ShowPopup("SD Read/Write", "Testing And Restoring", APP_UI_POPUP_MS);
                 SystemDiag_FeedWatchdog();
                 sd_test_result = (int16_t)SD_Self_Test_Card(&g_sd_card, test_block);
                 SystemDiag_FeedWatchdog();
@@ -502,7 +502,7 @@ static void run_diagnostics_if_requested(void)
         AppUI_RenderDiagnostics(page, diagnostic_key_mask(), sd_test_result, frame - started);
         frame_delay(frame);
     }
-    AppUI_ShowPopup("Diagnostics", "Exit to player", APP_UI_POPUP_MS);
+    AppUI_ShowPopup("Diagnostics", "Exit To Player", APP_UI_POPUP_MS);
 }
 
 static void wait_for_card(void)
@@ -521,7 +521,7 @@ static void wait_for_card(void)
             if (type > 0) {
                 s_media_lost = 0U;
                 printf("[APP] SD detected, type=%d\n", type);
-                AppUI_ShowPopup("SD detected", "Card is ready", APP_UI_POPUP_MS);
+                AppUI_ShowPopup("SD Detected", "Card Is Ready", APP_UI_POPUP_MS);
                 wait_popup_animation();
                 return;
             }
@@ -601,11 +601,11 @@ static uint8_t wait_for_files(void)
             FRESULT fr = fs_scan_video_dirs();
             if (fr != FR_OK) {
                 if (is_media_error(fr)) media_invalidate("empty-page rescan", fr);
-                else AppUI_ShowPopup("Scan failed", "Check filesystem", APP_UI_POPUP_MS);
+                else AppUI_ShowPopup("Scan Failed", "Check Filesystem", APP_UI_POPUP_MS);
                 return 0U;
             }
             if (s_file_cnt > 0U) {
-                AppUI_ShowPopup("Files found", "Open library", APP_UI_POPUP_MS);
+                AppUI_ShowPopup("Files Found", "Open Library", APP_UI_POPUP_MS);
                 return 1U;
             }
             next_scan = frame + APP_RESCAN_MS;
@@ -713,6 +713,13 @@ static uint8_t ui_select_file(uint8_t *sel_out)
     uint32_t next_probe = started + APP_CARD_PROBE_MS;
 
     s_key_ok = 0U;
+    /* 播放期间产生的上下键事件不得在返回文件列表后切换反显状态。
+     * 若按键仍被按住，先锁定导航，等两键全部释放后再允许菜单操作。 */
+    s_key_up = 0U;
+    s_key_down = 0U;
+    if (HAL_GPIO_ReadPin(FN_KEY_PORT, FN_KEY_UP_PIN) == GPIO_PIN_RESET ||
+        HAL_GPIO_ReadPin(FN_KEY_PORT, FN_KEY_DOWN_PIN) == GPIO_PIN_RESET)
+        inverse_chord.latched = 1U;
     for (;;) {
         uint32_t frame = HAL_GetTick();
         uint8_t move_up, move_down;
@@ -851,7 +858,7 @@ static void play_video(const char *fname)
     FRESULT fr = f_open(&f, path, FA_READ);
     if (fr != FR_OK) {
         if (is_media_error(fr)) media_invalidate("open", fr);
-        else AppUI_ShowPopup("Open failed", fname, APP_UI_POPUP_MS);
+        else AppUI_ShowPopup("Open Failed", fname, APP_UI_POPUP_MS);
         return;
     }
 
@@ -881,7 +888,7 @@ static void play_video(const char *fname)
     {
         playback_close(&f, &inverse_active);
         AppUI_ShowPopup((hdr.width > OLED_WIDTH || hdr.height > OLED_HEIGHT) ?
-                        "Frame too big" : "Invalid OVID", fname, APP_UI_POPUP_MS);
+                        "Frame Too Big" : "Invalid OVID", fname, APP_UI_POPUP_MS);
         printf("[PLAYER] reject %s: v=%u flags=%u %ux%u frames=%lu fps=%u frame=%lu file=%lu size_bad=%u\n",
                path, hdr.version, hdr.flags, hdr.width, hdr.height,
                (unsigned long)hdr.frame_count, hdr.fps,
@@ -901,7 +908,7 @@ static void play_video(const char *fname)
         if (fr != FR_OK) {
             playback_close(&f, &inverse_active);
             if (is_media_error(fr)) media_invalidate("seek", fr);
-            else AppUI_ShowPopup("Seek failed", fname, APP_UI_POPUP_MS);
+            else AppUI_ShowPopup("Seek Failed", fname, APP_UI_POPUP_MS);
             return;
         }
         for (uint32_t i = 0; i < hdr.frame_count; ++i)
@@ -911,14 +918,14 @@ static void play_video(const char *fname)
             SystemDiag_FeedWatchdog();
             if (key_take(&s_key_ok)) {
                 playback_close(&f, &inverse_active);
-                AppUI_ShowClassicPopup("Library", "Playback stopped", APP_UI_POPUP_MS);
+                AppUI_ShowClassicPopup("Library", "Playback Stopped", APP_UI_POPUP_MS);
                 return;
             }
             fr = read_frame(&f, &hdr, fbytes, ox, oy, &calculated_crc);
             if (fr != FR_OK) {
                 playback_close(&f, &inverse_active);
                 if (is_media_error(fr)) media_invalidate("frame", fr);
-                else AppUI_ShowPopup("Read failed", fname, APP_UI_POPUP_MS);
+                else AppUI_ShowPopup("Read Failed", fname, APP_UI_POPUP_MS);
                 return;
             }
 
@@ -928,7 +935,7 @@ static void play_video(const char *fname)
                 if (fr != FR_OK || br != sizeof(stored_crc)) {
                     playback_close(&f, &inverse_active);
                     if (fr != FR_OK && is_media_error(fr)) media_invalidate("frame CRC", fr);
-                    else AppUI_ShowPopup("Read failed", "Missing frame CRC", APP_UI_POPUP_MS);
+                    else AppUI_ShowPopup("Read Failed", "Missing Frame CRC", APP_UI_POPUP_MS);
                     return;
                 }
                 if (stored_crc != calculated_crc) {
@@ -966,9 +973,9 @@ void Function_Run(void)
     run_diagnostics_if_requested();
 
     if (SystemDiag_HasFaultRecord())
-        AppUI_ShowPopup("Fault recovered", "See UART / diagnostics", APP_UI_POPUP_MS);
+        AppUI_ShowPopup("Fault Recovered", "See UART / Diagnostics", APP_UI_POPUP_MS);
     else if (SystemDiag_WasWatchdogReset())
-        AppUI_ShowPopup("Watchdog reset", "System recovered", APP_UI_POPUP_MS);
+        AppUI_ShowPopup("Watchdog Reset", "System Recovered", APP_UI_POPUP_MS);
 
     for (;;) {
         s_media_lost = 0U;
@@ -987,7 +994,7 @@ void Function_Run(void)
         if (fr != FR_OK) {
             if (is_media_error(fr)) media_invalidate("mount/analyze", fr);
             else {
-                AppUI_ShowPopup("Mount failed", "Check FAT volume", APP_UI_POPUP_MS);
+                AppUI_ShowPopup("Mount Failed", "Check FAT Volume", APP_UI_POPUP_MS);
                 media_invalidate("mount/analyze", fr);
             }
             show_removed_sequence();
@@ -1012,7 +1019,7 @@ void Function_Run(void)
             fr = fs_scan_video_dirs();
             if (fr != FR_OK) {
                 if (is_media_error(fr)) media_invalidate("post-play scan", fr);
-                else AppUI_ShowPopup("Scan failed", "Check filesystem", APP_UI_POPUP_MS);
+                else AppUI_ShowPopup("Scan Failed", "Check Filesystem", APP_UI_POPUP_MS);
                 break;
             }
         }
