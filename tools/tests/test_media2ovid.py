@@ -81,6 +81,44 @@ class MediaToOvidTests(unittest.TestCase):
                 data = media2ovid.process_image(source, options)
                 self.assertEqual(len(data), h2bin.frame_bytes(8, 8))
 
+    def test_threshold_boundary_and_floyd_dithering_are_binary(self):
+        source = Image.new("L", (4, 1))
+        source.putdata([64, 127, 128, 200])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            threshold_options = self.options(
+                root / "source.png",
+                root / "threshold.bin",
+                width=4,
+                height=1,
+                dither="threshold",
+                threshold=128,
+                fit="stretch",
+            )
+            floyd_options = self.options(
+                root / "source.png",
+                root / "floyd.bin",
+                width=4,
+                height=1,
+                dither="floyd",
+                fit="stretch",
+            )
+            threshold = media2ovid.image_to_monochrome(source, threshold_options)
+            floyd = media2ovid.image_to_monochrome(source, floyd_options)
+            self.assertEqual([0, 0, 255, 255], list(threshold.get_flattened_data()))
+            self.assertLessEqual(set(floyd.get_flattened_data()), {0, 255})
+
+    def test_prepared_preview_matches_direct_preview(self):
+        source = Image.linear_gradient("L").resize((8, 8))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            options = self.options(root / "source.png", root / "output.bin")
+            prepared = media2ovid.prepare_monochrome_source(source, options)
+            self.assertEqual(
+                media2ovid.preview_png(source, options),
+                media2ovid.preview_prepared_png(prepared, options),
+            )
+
     def test_transparent_gif_is_resampled_to_constant_fps(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

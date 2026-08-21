@@ -217,9 +217,14 @@ def _fit_rgba(image, width: int, height: int, fit: str, background: str):
     return canvas.convert("L")
 
 
-def image_to_monochrome(image, options: ConversionOptions):
+def prepare_monochrome_source(image, options: ConversionOptions):
+    """Resize and composite one frame before applying a monochrome method."""
+    return _fit_rgba(image, options.width, options.height, options.fit, options.background)
+
+
+def monochrome_from_grayscale(gray, options: ConversionOptions):
+    """Apply the selected deterministic black-and-white conversion."""
     Image, ImageOps, _ = _require_pillow()
-    gray = _fit_rgba(image, options.width, options.height, options.fit, options.background)
     if options.dither == "floyd":
         mono = gray.convert("1", dither=Image.Dither.FLOYDSTEINBERG)
     else:
@@ -227,6 +232,11 @@ def image_to_monochrome(image, options: ConversionOptions):
     if options.invert:
         mono = ImageOps.invert(mono.convert("L")).convert("1", dither=Image.Dither.NONE)
     return mono
+
+
+def image_to_monochrome(image, options: ConversionOptions):
+    gray = prepare_monochrome_source(image, options)
+    return monochrome_from_grayscale(gray, options)
 
 
 def monochrome_to_page_major(image) -> bytes:
@@ -250,9 +260,9 @@ def process_image(image, options: ConversionOptions) -> bytes:
     return monochrome_to_page_major(image_to_monochrome(image, options))
 
 
-def preview_png(image, options: ConversionOptions, scale: int = 4) -> bytes:
+def preview_prepared_png(gray, options: ConversionOptions, scale: int = 4) -> bytes:
     Image, _, _ = _require_pillow()
-    mono = image_to_monochrome(image, options)
+    mono = monochrome_from_grayscale(gray, options)
     if scale > 1:
         mono = mono.resize(
             (mono.width * scale, mono.height * scale),
@@ -261,6 +271,11 @@ def preview_png(image, options: ConversionOptions, scale: int = 4) -> bytes:
     buffer = io.BytesIO()
     mono.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def preview_png(image, options: ConversionOptions, scale: int = 4) -> bytes:
+    gray = prepare_monochrome_source(image, options)
+    return preview_prepared_png(gray, options, scale)
 
 
 def _iter_directory(options: ConversionOptions) -> Iterator[object]:

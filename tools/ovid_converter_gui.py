@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import flet as ft
@@ -22,7 +22,8 @@ from media2ovid import (
     convert_media,
     estimate_output_bytes,
     iter_source_images,
-    preview_png,
+    prepare_monochrome_source,
+    preview_prepared_png,
     probe_source,
 )
 
@@ -32,6 +33,34 @@ MAX_PREVIEW_CACHE = 180
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 PRIMARY_FONT = "Google Sans Flex"
 SIMPLIFIED_CHINESE_FONT = "Noto Sans SC"
+NAVIGATION_ITEMS = (
+    (ft.Icons.MOVIE, "转换"),
+    (ft.Icons.SETTINGS, "设置"),
+    (ft.Icons.INFO, "关于"),
+)
+
+
+class PreviewFinished(RuntimeError):
+    """The preview iterator reached the end of the selected media."""
+
+
+def parse_preview_fps(value: object) -> int:
+    """Parse the preview frame rate without leaking UI conversion errors."""
+    try:
+        fps = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("FPS 必须是 1–120 之间的整数") from exc
+    if not 1 <= fps <= 120:
+        raise ValueError("FPS 必须是 1–120 之间的整数")
+    return fps
+
+
+def advance_preview_deadline(deadline: float, now: float, interval: float) -> tuple[float, float]:
+    """Return the remaining delay and next deadline without burst catch-up."""
+    deadline += interval
+    if deadline <= now:
+        return 0.0, now
+    return deadline - now, deadline
 
 
 def _app_text_style(weight: ft.FontWeight = ft.FontWeight.W_400) -> ft.TextStyle:
@@ -120,7 +149,7 @@ class PreviewSession:
     def __init__(self) -> None:
         self.options: ConversionOptions | None = None
         self.iterator = None
-        self.frames: list[bytes] = []
+        self.frames: list[object] = []
         self.index = -1
         self.base_index = 0
 
@@ -144,11 +173,18 @@ class PreviewSession:
             raise ValueError("请先选择输入素材")
         if self.index + 1 < len(self.frames):
             self.index += 1
-            return self.frames[self.index], self.base_index + self.index + 1
+            data = preview_prepared_png(self.frames[self.index], self.options, scale=4)
+            return data, self.base_index + self.index + 1
 
-        image = next(self.iterator)
-        data = preview_png(image, self.options, scale=4)
-        self.frames.append(data)
+        try:
+            image = next(self.iterator)
+        except StopIteration as exc:
+            # StopIteration cannot cross an asyncio Future boundary. Convert it
+            # before next_frame() returns to asyncio.to_thread().
+            raise PreviewFinished("已到最后一帧") from exc
+        prepared = prepare_monochrome_source(image, self.options)
+        data = preview_prepared_png(prepared, self.options, scale=4)
+        self.frames.append(prepared)
         self.index += 1
         if len(self.frames) > MAX_PREVIEW_CACHE:
             self.frames.pop(0)
@@ -161,7 +197,20 @@ class PreviewSession:
             raise ValueError("当前没有预览帧")
         if self.index > 0:
             self.index -= 1
-        return self.frames[self.index], self.base_index + self.index + 1
+        data = preview_prepared_png(self.frames[self.index], self.options, scale=4)
+        return data, self.base_index + self.index + 1
+
+    def rerender_current(self, dither: str, threshold: int, invert: bool) -> tuple[bytes, int]:
+        if self.options is None or not self.frames or self.index < 0:
+            raise ValueError("当前没有预览帧")
+        self.options = replace(
+            self.options,
+            dither=dither,
+            threshold=threshold,
+            invert=invert,
+        )
+        data = preview_prepared_png(self.frames[self.index], self.options, scale=4)
+        return data, self.base_index + self.index + 1
 
 
 class ConverterApp:
@@ -170,6 +219,10 @@ class ConverterApp:
         self.settings = load_settings()
         self.cancel_event = threading.Event()
         self.preview = PreviewSession()
+        self.preview_lock = asyncio.Lock()
+        self.preview_revision = 0
+        self.preview_playback_revision = 0
+        self.preview_render_revision = 0
         self.preview_playing = False
         self.busy = False
         self.page_index = 0
@@ -246,7 +299,25 @@ class ConverterApp:
         self.dither_control = ft.SegmentedButton(
             segments=[
                 ft.Segment(value="floyd", label=ft.Text("Floyd 抖动"), icon=ft.Icons.GRAIN),
-                ft.Segment(value="threshold", label=ft.Text("固定阈值"), icon=ft.Icons.CONTRAST),
+                ft.Segment(
+                    value="threshold",
+                    label=ft.Row(
+                        [
+                            ft.Text("固定阈值"),
+                            ft.Icon(
+                                ft.Icons.HELP_OUTLINE,
+                                size=16,
+                                tooltip=(
+                                    "建议先使用 128。画面偏暗、细节丢失时调低；"
+                                    "背景发白、噪点过多时调高。常用范围为 96–160。"
+                                    "Floyd 抖动不使用此阈值。"
+                                ),
+                            ),
+                        ],
+                        spacing=4,
+                    ),
+                    icon=ft.Icons.CONTRAST,
+                ),
             ],
             selected=["floyd"],
             on_change=self._on_dither_change,
@@ -258,6 +329,7 @@ class ConverterApp:
             value=128,
             label="阈值 {value}",
             disabled=True,
+            on_change=self._on_threshold_change,
         )
         self.background_dropdown = ft.Dropdown(
             label="透明区域背景",
@@ -274,6 +346,7 @@ class ConverterApp:
         self.preview_image = ft.Image(
             src=self._empty_preview(),
             fit=ft.BoxFit.CONTAIN,
+            gapless_playback=True,
             filter_quality=ft.FilterQuality.NONE,
             anti_alias=False,
             height=320,
@@ -305,9 +378,8 @@ class ConverterApp:
         self.page_host = ft.Container(expand=True, padding=ft.Padding.all(20))
 
         destinations = [
-            ft.NavigationRailDestination(icon=ft.Icons.MOVIE, label="转换"),
-            ft.NavigationRailDestination(icon=ft.Icons.SETTINGS, label="设置"),
-            ft.NavigationRailDestination(icon=ft.Icons.INFO, label="关于"),
+            ft.NavigationRailDestination(icon=icon, label=label)
+            for icon, label in NAVIGATION_ITEMS
         ]
         self.navigation_rail = ft.NavigationRail(
             destinations=destinations,
@@ -318,9 +390,8 @@ class ConverterApp:
         )
         self.navigation_bar = ft.NavigationBar(
             destinations=[
-                ft.NavigationBarDestination(icon=ft.Icons.MOVIE, label="转换"),
-                ft.NavigationBarDestination(icon=ft.Icons.SETTINGS, label="设置"),
-                ft.NavigationBarDestination(icon=ft.Icons.INFO, label="关于"),
+                ft.NavigationBarDestination(icon=icon, label=label)
+                for icon, label in NAVIGATION_ITEMS
             ],
             selected_index=0,
             on_change=lambda event: self._show_page(event.control.selected_index),
@@ -591,76 +662,123 @@ class ConverterApp:
             self.page.update()
 
     def _set_source(self, source: Path) -> None:
+        self.preview_playing = False
+        self.preview_playback_revision += 1
+        self.preview_render_revision += 1
+        self.preview_revision += 1
+        self.preview_play_button.icon = ft.Icons.PLAY_ARROW
         self.source_field.value = str(source)
         output_dir = Path(self.settings.output_directory) if self.settings.output_directory else source.parent
         self.output_field.value = str(output_dir / f"{source.stem}.BIN")
-        self.preview.close()
         self.preview_label.value = "正在载入预览…"
         self.page.update()
 
     async def _refresh_preview(self, _=None):
+        self.preview_revision += 1
         await self._load_first_preview()
 
     async def _load_first_preview(self):
+        self.preview_playing = False
+        self.preview_playback_revision += 1
+        self.preview_render_revision += 1
+        self.preview_play_button.icon = ft.Icons.PLAY_ARROW
+        self.page.update(self.preview_play_button)
+        revision = self.preview_revision
         try:
             options = self._options(require_output=False)
-            info = await asyncio.to_thread(probe_source, options)
-            await asyncio.to_thread(self.preview.reset, options)
-            data, index = await asyncio.to_thread(self.preview.next_frame)
-            self.preview_image.src = data
+            async with self.preview_lock:
+                await asyncio.to_thread(self.preview.close)
+                info = await asyncio.to_thread(probe_source, options)
+                await asyncio.to_thread(self.preview.reset, options)
+                data, index = await asyncio.to_thread(self.preview.next_frame)
+            if revision != self.preview_revision:
+                return
             total = info.frame_count if info.frame_count is not None else "?"
             estimate = estimate_output_bytes(options, info)
-            self.preview_label.value = f"第 {index}/{total} 帧 · 预计 {human_size(estimate)}"
-            self.page.update()
+            self._set_preview_frame(data, f"第 {index}/{total} 帧 · 预计 {human_size(estimate)}")
         except Exception as exc:
+            if revision != self.preview_revision:
+                return
             self._show_error("无法预览素材", exc)
 
     async def _preview_first(self, _):
+        self.preview_revision += 1
         await self._load_first_preview()
 
     async def _preview_next(self, _=None) -> bool:
+        revision = self.preview_revision
         try:
-            data, index = await asyncio.to_thread(self.preview.next_frame)
-            self.preview_image.src = data
-            self.preview_label.value = f"第 {index} 帧"
-            self.page.update()
+            async with self.preview_lock:
+                data, index = await asyncio.to_thread(self.preview.next_frame)
+            if revision != self.preview_revision:
+                return False
+            self._set_preview_frame(data, f"第 {index} 帧")
             return True
-        except StopIteration:
+        except PreviewFinished:
+            if revision != self.preview_revision:
+                return False
+            self.preview_label.value = "已到最后一帧"
+            self.page.update(self.preview_label)
             return False
         except Exception as exc:
+            if revision != self.preview_revision:
+                return False
             self._show_error("无法读取下一帧", exc)
             return False
 
     async def _preview_previous(self, _):
+        revision = self.preview_revision
         try:
-            data, index = self.preview.previous_frame()
-            self.preview_image.src = data
-            self.preview_label.value = f"第 {index} 帧"
-            self.page.update()
+            async with self.preview_lock:
+                data, index = self.preview.previous_frame()
+            if revision != self.preview_revision:
+                return
+            self._set_preview_frame(data, f"第 {index} 帧")
         except Exception as exc:
+            if revision != self.preview_revision:
+                return
             self._show_error("无法读取上一帧", exc)
+
+    def _set_preview_frame(self, data: bytes, label: str) -> None:
+        self.preview_image.src = data
+        self.preview_label.value = label
+        self.page.update(self.preview_image, self.preview_label)
 
     async def _toggle_preview_playback(self, _):
         if self.preview_playing:
             self.preview_playing = False
+            self.preview_playback_revision += 1
             self.preview_play_button.icon = ft.Icons.PLAY_ARROW
-            self.page.update()
+            self.page.update(self.preview_play_button)
             return
         if not self.source_field.value:
             self._show_error("无法播放预览", ValueError("请先选择输入素材"))
             return
+        try:
+            fps = parse_preview_fps(self.fps_field.value)
+        except ValueError as exc:
+            self._show_error("无法播放预览", exc)
+            return
+        self.preview_playback_revision += 1
+        playback_revision = self.preview_playback_revision
         self.preview_playing = True
         self.preview_play_button.icon = ft.Icons.STOP
-        self.page.update()
+        self.page.update(self.preview_play_button)
+        loop = asyncio.get_running_loop()
+        interval = 1.0 / fps
+        deadline = loop.time()
         try:
-            while self.preview_playing:
+            while self.preview_playing and playback_revision == self.preview_playback_revision:
                 if not await self._preview_next():
                     break
-                await asyncio.sleep(max(1 / 120, 1 / int(self.fps_field.value)))
+                delay, deadline = advance_preview_deadline(deadline, loop.time(), interval)
+                if delay > 0:
+                    await asyncio.sleep(delay)
         finally:
-            self.preview_playing = False
-            self.preview_play_button.icon = ft.Icons.PLAY_ARROW
-            self.page.update()
+            if playback_revision == self.preview_playback_revision:
+                self.preview_playing = False
+                self.preview_play_button.icon = ft.Icons.PLAY_ARROW
+                self.page.update(self.preview_play_button)
 
     async def _start_conversion(self, _):
         if self.busy:
@@ -726,9 +844,48 @@ class ConverterApp:
         self.progress_text.value = "正在取消…"
         self.page.update()
 
-    def _on_dither_change(self, _):
+    async def _on_dither_change(self, _):
         self.threshold_slider.disabled = self.dither_control.selected[0] != "threshold"
-        self.page.update()
+        self.page.update(self.dither_control, self.threshold_slider)
+        await self._rerender_current_preview()
+
+    async def _on_threshold_change(self, _):
+        await self._rerender_current_preview(debounce=True)
+
+    async def _rerender_current_preview(self, *, debounce: bool = False) -> None:
+        if not self.source_field.value or self.preview.index < 0:
+            return
+        self.preview_render_revision += 1
+        render_revision = self.preview_render_revision
+        source_revision = self.preview_revision
+        if debounce:
+            await asyncio.sleep(0.03)
+        if (
+            render_revision != self.preview_render_revision
+            or source_revision != self.preview_revision
+        ):
+            return
+        try:
+            dither = self.dither_control.selected[0]
+            threshold = round(float(self.threshold_slider.value))
+            async with self.preview_lock:
+                data, index = await asyncio.to_thread(
+                    self.preview.rerender_current,
+                    dither,
+                    threshold,
+                    bool(self.invert_switch.value),
+                )
+            if (
+                render_revision != self.preview_render_revision
+                or source_revision != self.preview_revision
+            ):
+                return
+            self._set_preview_frame(data, f"第 {index} 帧")
+        except ValueError:
+            return
+        except Exception as exc:
+            if source_revision == self.preview_revision:
+                self._show_error("无法刷新预览", exc)
 
     def _save_settings(self, _):
         try:
@@ -777,8 +934,10 @@ class ConverterApp:
         self.page.schedule_update()
 
     def _show_page(self, index: int) -> None:
-        self.page_index = index
         pages = [self.convert_page, self.settings_page, self.about_page]
+        if not 0 <= index < len(pages):
+            index = 0
+        self.page_index = index
         self.page_host.content = pages[index]
         self.navigation_rail.selected_index = index
         self.navigation_bar.selected_index = index
