@@ -14,6 +14,7 @@
 #include "i2c.h"
 #include "fonts.hpp"
 #include "oled.hpp"
+#include "system_diag.h"
 
 /* 便携式 CTZ（Count Trailing Zeros）— 兼容 GCC / ARMCC / IAR */
 #if defined(__GNUC__) || defined(__clang__)
@@ -166,6 +167,7 @@ void OLED_Wait_DMA()
     if (s_i2c_recover_pending) OLED_Recover_I2C();
     uint32_t start = HAL_GetTick();
     while (OLED_DMA_Busy) {
+        SystemDiag_FeedWatchdog();
         if ((HAL_GetTick() - start) > OLED_DMA_TIMEOUT_MS) {
             I2C1_AdaptiveFailure(1U);
             OLED_Recover_I2C();

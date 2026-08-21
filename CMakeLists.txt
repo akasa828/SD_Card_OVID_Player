@@ -52,6 +52,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Micro_SD/sd_debug.c
     Core/function/function.c
     Core/function/app_ui.c
+    Core/function/system_diag.c
     Core/fatfs/ff.c
     Core/fatfs/diskio.c
     Core/fatfs/ffsystem.c
@@ -79,6 +80,15 @@ if(DEFINED OLED_WIDTH_OVERRIDE)
 endif()
 if(DEFINED OLED_HEIGHT_OVERRIDE)
     target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE OLED_HEIGHT=${OLED_HEIGHT_OVERRIDE})
+endif()
+if(DEFINED OLED_CONTROLLER_OVERRIDE)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE OLED_CONTROLLER=${OLED_CONTROLLER_OVERRIDE})
+endif()
+if(DEFINED OLED_COLUMN_OFFSET_OVERRIDE)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE OLED_COLUMN_OFFSET=${OLED_COLUMN_OFFSET_OVERRIDE})
+endif()
+if(DEFINED OLED_I2C_CLOCK_OVERRIDE)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE I2C1_INITIAL_CLOCK_HZ=${OLED_I2C_CLOCK_OVERRIDE})
 endif()
 
 # Remove wrong libob.a library dependency when using cpp files
