@@ -1,7 +1,8 @@
 param(
     [string]$Version = "1.3.0-beta.1",
     [string]$WindowsVersion = "1.3.0.1",
-    [string]$OutputRoot = ""
+    [string]$OutputRoot = "",
+    [string]$PythonExecutable = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,17 +14,38 @@ if (-not $OutputRoot) {
 $OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
 $buildRoot = Join-Path $toolsRoot "build"
 $iconPath = Join-Path $buildRoot "ovid_converter.ico"
+$assetsPath = Join-Path $toolsRoot "assets"
 $portableRoot = Join-Path $OutputRoot "portable"
+
+if (-not $PythonExecutable) {
+    $pythonCandidates = @(
+        (Join-Path $repoRoot ".venv\Scripts\python.exe"),
+        (Join-Path $repoRoot ".venv-test\Scripts\python.exe")
+    )
+    if ($env:VIRTUAL_ENV) {
+        $pythonCandidates = @((Join-Path $env:VIRTUAL_ENV "Scripts\python.exe")) + $pythonCandidates
+    }
+    $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($pythonCommand) {
+        $pythonCandidates += $pythonCommand.Source
+    }
+    $PythonExecutable = $pythonCandidates | Where-Object {
+        $_ -and (Test-Path -LiteralPath $_)
+    } | Select-Object -First 1
+}
+if (-not $PythonExecutable) {
+    throw "Python was not found. Activate the converter build environment or pass -PythonExecutable."
+}
 
 if (Test-Path -LiteralPath $OutputRoot) {
     Remove-Item -LiteralPath $OutputRoot -Recurse -Force
 }
 New-Item -ItemType Directory -Path $portableRoot -Force | Out-Null
 
-& python (Join-Path $toolsRoot "generate_converter_assets.py")
+& $PythonExecutable (Join-Path $toolsRoot "generate_converter_assets.py")
 if ($LASTEXITCODE -ne 0) { throw "Failed to generate converter icon." }
 
-& flet pack (Join-Path $toolsRoot "ovid_converter_gui.py") `
+& $PythonExecutable -m flet.cli pack (Join-Path $toolsRoot "ovid_converter_gui.py") `
     --onedir `
     --yes `
     --name "OVID Converter" `
@@ -35,6 +57,7 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to generate converter icon." }
     --file-version $WindowsVersion `
     --company-name "riochihao" `
     --copyright "Copyright (c) 2026 riochihao" `
+    --add-data "${assetsPath}:assets" `
     --hidden-import imageio_ffmpeg
 if ($LASTEXITCODE -ne 0) { throw "Flet packaging failed." }
 
@@ -43,7 +66,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $appRoot "OVID Converter.exe"))) {
     throw "Packaged executable was not found."
 }
 
-& python (Join-Path $toolsRoot "collect_converter_licenses.py") `
+& $PythonExecutable (Join-Path $toolsRoot "collect_converter_licenses.py") `
     --output-root $OutputRoot `
     --app-root $appRoot
 if ($LASTEXITCODE -ne 0) { throw "Failed to collect third-party licenses." }

@@ -29,6 +29,40 @@ from media2ovid import (
 
 REPOSITORY_URL = "https://github.com/akasa828/SD_Card_OVID_Player"
 MAX_PREVIEW_CACHE = 180
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+PRIMARY_FONT = "Google Sans Flex"
+SIMPLIFIED_CHINESE_FONT = "Noto Sans SC"
+
+
+def _app_text_style(weight: ft.FontWeight = ft.FontWeight.W_400) -> ft.TextStyle:
+    """Keep Latin and Simplified Chinese text on the same visual weight."""
+    return ft.TextStyle(
+        weight=weight,
+        font_family=PRIMARY_FONT,
+        font_family_fallback=[SIMPLIFIED_CHINESE_FONT],
+    )
+
+
+def _app_text_theme() -> ft.TextTheme:
+    regular = ft.FontWeight.W_400
+    medium = ft.FontWeight.W_500
+    return ft.TextTheme(
+        body_large=_app_text_style(regular),
+        body_medium=_app_text_style(regular),
+        body_small=_app_text_style(regular),
+        display_large=_app_text_style(medium),
+        display_medium=_app_text_style(medium),
+        display_small=_app_text_style(medium),
+        headline_large=_app_text_style(medium),
+        headline_medium=_app_text_style(medium),
+        headline_small=_app_text_style(medium),
+        label_large=_app_text_style(medium),
+        label_medium=_app_text_style(medium),
+        label_small=_app_text_style(medium),
+        title_large=_app_text_style(medium),
+        title_medium=_app_text_style(medium),
+        title_small=_app_text_style(medium),
+    )
 
 
 def human_size(value: int | None) -> str:
@@ -148,8 +182,26 @@ class ConverterApp:
 
     def _configure_page(self) -> None:
         self.page.title = f"{DISPLAY_NAME} {VERSION}"
-        self.page.theme = ft.Theme(color_scheme_seed=ft.Colors.INDIGO, use_material3=True)
-        self.page.dark_theme = ft.Theme(color_scheme_seed=ft.Colors.INDIGO, use_material3=True)
+        self.page.fonts = {
+            PRIMARY_FONT: "/fonts/GoogleSansFlex-Variable.ttf",
+            SIMPLIFIED_CHINESE_FONT: "/fonts/NotoSansSC-Variable.ttf",
+        }
+        self.page.locale_configuration = ft.LocaleConfiguration(
+            supported_locales=[ft.Locale("zh", "CN")],
+            current_locale=ft.Locale("zh", "CN"),
+        )
+        self.page.theme = ft.Theme(
+            color_scheme_seed=ft.Colors.INDIGO,
+            use_material3=True,
+            font_family=PRIMARY_FONT,
+            text_theme=_app_text_theme(),
+        )
+        self.page.dark_theme = ft.Theme(
+            color_scheme_seed=ft.Colors.INDIGO,
+            use_material3=True,
+            font_family=PRIMARY_FONT,
+            text_theme=_app_text_theme(),
+        )
         self._apply_theme(self.settings.theme)
         self.page.padding = 0
         self.page.window.width = 1120
@@ -762,7 +814,10 @@ class ConverterApp:
 
 async def main(page: ft.Page) -> None:
     ConverterApp(page)
+    page.update()
+    await page.window.center()
+    page.update()
 
 
 if __name__ == "__main__":
-    ft.run(main, name="OVID Converter")
+    ft.run(main, name="OVID Converter", assets_dir=str(ASSETS_DIR))

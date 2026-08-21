@@ -25,6 +25,19 @@ imageio-ffmpeg 0.6.0
   License: BSD 2-Clause
   Source: https://github.com/imageio/imageio-ffmpeg
 
+Google Sans Flex
+  License: SIL Open Font License 1.1
+  Source: https://fonts.google.com/specimen/Google+Sans+Flex
+
+Noto Sans SC
+  Copyright 2014-2021 Adobe, with Reserved Font Name "Source"
+  License: SIL Open Font License 1.1
+  Source: https://fonts.google.com/noto/specimen/Noto+Sans+SC
+
+The bundled fonts share the complete license text in
+licenses/OFL-1.1.txt. Their source and license links are recorded in
+licenses/FONT_SOURCES.md.
+
 FFmpeg
   Copyright the FFmpeg developers
   Bundled build: imageio-ffmpeg Windows x64 FFmpeg 7.1 essentials build

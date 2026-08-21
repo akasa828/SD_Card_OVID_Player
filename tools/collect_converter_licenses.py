@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 PACKAGES = ("flet", "flet-desktop", "Pillow", "imageio-ffmpeg")
+FONT_LICENSE_FILES = ("OFL-1.1.txt", "FONT_SOURCES.md")
 
 
 def collect(output_root: Path, app_root: Path | None = None) -> None:
@@ -19,6 +20,10 @@ def collect(output_root: Path, app_root: Path | None = None) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     notices = Path(__file__).resolve().parent / "THIRD_PARTY_NOTICES.txt"
     shutil.copy2(notices, output_root / notices.name)
+
+    font_root = Path(__file__).resolve().parent / "assets" / "fonts"
+    for filename in FONT_LICENSE_FILES:
+        shutil.copy2(font_root / filename, destination / filename)
 
     for package in PACKAGES:
         distribution = importlib.metadata.distribution(package)

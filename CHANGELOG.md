@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+### OVID Converter
+
+- 桌面端内置 Google Sans Flex，并以 Noto Sans SC 补全简体中文字符，统一控件文字的字重和字形。
+- 固定使用 `zh-CN` 本地化，避免系统语言造成简繁体界面混用。
+- 应用窗口完成初始布局后自动移动到屏幕中央，不再沿用系统或上次运行的随机位置。
+- Windows 安装版和便携版现在会同时打包字体文件及 SIL Open Font License 说明。
+- 本地打包脚本可从项目虚拟环境自动定位 Python，也可通过 `-PythonExecutable` 显式指定，避免 Windows 应用执行别名导致打包失败。
+
 ## v1.3.0-beta.1 OVID 转换器预发布（2026-08-22）
 
 ### OVID Converter
