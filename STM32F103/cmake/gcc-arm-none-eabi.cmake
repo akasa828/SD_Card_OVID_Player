@@ -4,16 +4,58 @@ set(CMAKE_SYSTEM_PROCESSOR          arm)
 set(CMAKE_C_COMPILER_ID GNU)
 set(CMAKE_CXX_COMPILER_ID GNU)
 
-# Some default GCC settings
-# arm-none-eabi- must be part of path environment
-set(TOOLCHAIN_PREFIX                arm-none-eabi-)
+# Resolve the GNU Arm toolchain without storing a machine-specific absolute path
+# in the repository. STM32CubeIDE for VS Code injects CUBE_BUNDLE_PATH; ordinary
+# command-line builds can still provide arm-none-eabi-* through PATH.
+set(_STM32_GCC_HINTS "")
+if(DEFINED ENV{CUBE_BUNDLE_PATH} AND NOT "$ENV{CUBE_BUNDLE_PATH}" STREQUAL "")
+    file(GLOB _STM32_GCC_BUNDLES LIST_DIRECTORIES true
+        "$ENV{CUBE_BUNDLE_PATH}/gnu-tools-for-stm32/*")
+    list(SORT _STM32_GCC_BUNDLES COMPARE NATURAL ORDER DESCENDING)
+    foreach(_STM32_GCC_BUNDLE IN LISTS _STM32_GCC_BUNDLES)
+        if(IS_DIRECTORY "${_STM32_GCC_BUNDLE}/bin")
+            list(APPEND _STM32_GCC_HINTS "${_STM32_GCC_BUNDLE}/bin")
+        endif()
+    endforeach()
+endif()
 
-set(CMAKE_C_COMPILER                ${TOOLCHAIN_PREFIX}gcc)
-set(CMAKE_ASM_COMPILER              ${CMAKE_C_COMPILER})
-set(CMAKE_CXX_COMPILER              ${TOOLCHAIN_PREFIX}g++)
-set(CMAKE_LINKER                    ${TOOLCHAIN_PREFIX}g++)
-set(CMAKE_OBJCOPY                   ${TOOLCHAIN_PREFIX}objcopy)
-set(CMAKE_SIZE                      ${TOOLCHAIN_PREFIX}size)
+find_program(_STM32_ARM_GCC
+    NAMES arm-none-eabi-gcc arm-none-eabi-gcc.exe
+    HINTS ${_STM32_GCC_HINTS})
+
+if(NOT _STM32_ARM_GCC)
+    message(FATAL_ERROR
+        "GNU Arm compiler not found. Open the project with the official "
+        "STM32CubeIDE for Visual Studio Code extension so Bundle Manager can "
+        "provide gnu-tools-for-stm32, or add arm-none-eabi-gcc to PATH.")
+endif()
+
+get_filename_component(_STM32_GCC_BIN_DIR "${_STM32_ARM_GCC}" DIRECTORY)
+
+function(_stm32_find_tool output_variable tool_name)
+    find_program(${output_variable}
+        NAMES "${tool_name}" "${tool_name}.exe"
+        HINTS "${_STM32_GCC_BIN_DIR}"
+        NO_DEFAULT_PATH)
+    if(NOT DEFINED ${output_variable} OR
+       "${${output_variable}}" MATCHES "-NOTFOUND$")
+        message(FATAL_ERROR
+            "Required GNU Arm tool '${tool_name}' was not found beside "
+            "${_STM32_ARM_GCC}.")
+    endif()
+    set(${output_variable} "${${output_variable}}" PARENT_SCOPE)
+endfunction()
+
+_stm32_find_tool(_STM32_ARM_GXX     arm-none-eabi-g++)
+_stm32_find_tool(_STM32_ARM_OBJCOPY arm-none-eabi-objcopy)
+_stm32_find_tool(_STM32_ARM_SIZE    arm-none-eabi-size)
+
+set(CMAKE_C_COMPILER                "${_STM32_ARM_GCC}")
+set(CMAKE_ASM_COMPILER              "${_STM32_ARM_GCC}")
+set(CMAKE_CXX_COMPILER              "${_STM32_ARM_GXX}")
+set(CMAKE_LINKER                    "${_STM32_ARM_GXX}")
+set(CMAKE_OBJCOPY                   "${_STM32_ARM_OBJCOPY}")
+set(CMAKE_SIZE                      "${_STM32_ARM_SIZE}")
 
 set(CMAKE_EXECUTABLE_SUFFIX_ASM     ".elf")
 set(CMAKE_EXECUTABLE_SUFFIX_C       ".elf")
