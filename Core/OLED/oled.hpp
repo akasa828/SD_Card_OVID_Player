@@ -35,6 +35,32 @@ extern "C" {
 #define OLED_PAGES      (OLED_HEIGHT / 8)
 #define OLED_GRAM_SIZE  (OLED_PAGES * OLED_WIDTH)
 
+// ==================== 控制器与模组配置 ====================
+#define OLED_CONTROLLER_SSD1306 0
+#define OLED_CONTROLLER_SH1106  1
+#ifndef OLED_CONTROLLER
+#define OLED_CONTROLLER OLED_CONTROLLER_SSD1306
+#endif
+#ifndef OLED_COLUMN_OFFSET
+#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+#define OLED_COLUMN_OFFSET 2
+#else
+#define OLED_COLUMN_OFFSET 0
+#endif
+#endif
+#ifndef OLED_DEFAULT_H_FLIP
+#define OLED_DEFAULT_H_FLIP 1
+#endif
+#ifndef OLED_DEFAULT_V_FLIP
+#define OLED_DEFAULT_V_FLIP 1
+#endif
+#if OLED_CONTROLLER != OLED_CONTROLLER_SSD1306 && OLED_CONTROLLER != OLED_CONTROLLER_SH1106
+#error "OLED_CONTROLLER must be SSD1306 or SH1106"
+#endif
+#if (OLED_COLUMN_OFFSET + OLED_WIDTH) > 256
+#error "OLED_COLUMN_OFFSET + OLED_WIDTH exceeds controller column range"
+#endif
+
 // ==================== 可选功能开关 ====================
 #ifndef OLED_ENABLE_WAVE
 #define OLED_ENABLE_WAVE         1
@@ -91,6 +117,9 @@ extern const uint8_t DATA;
 extern volatile uint8_t OLED_DMA_Busy;
 void OLED_Wait_DMA(void);
 void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef* hi2c);
+uint32_t OLED_Get_I2C_Error_Count(void);
+uint32_t OLED_Get_I2C_Timeout_Count(void);
+uint32_t OLED_Get_I2C_Clock(void);
 
 // ==================== 底层通信 ====================
 void OLED_Write_Byte(uint8_t cmd, uint8_t mode);

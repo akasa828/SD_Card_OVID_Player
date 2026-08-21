@@ -21,6 +21,28 @@
 #include "i2c.h"
 
 /* USER CODE BEGIN 0 */
+static const uint32_t s_i2c1_speeds[] = {I2C1_INITIAL_CLOCK_HZ, 1000000UL, 800000UL, 400000UL};
+static volatile uint32_t s_i2c1_errors;
+static volatile uint32_t s_i2c1_timeouts;
+static volatile uint8_t s_i2c1_error_streak;
+static uint8_t s_i2c1_speed_index;
+
+void I2C1_AdaptiveFailure(uint8_t timeout_failure)
+{
+  s_i2c1_errors++;
+  if (timeout_failure) s_i2c1_timeouts++;
+  if (s_i2c1_error_streak < 255U) s_i2c1_error_streak++;
+  if (s_i2c1_error_streak >= 3U &&
+      s_i2c1_speed_index + 1U < (uint8_t)(sizeof(s_i2c1_speeds) / sizeof(s_i2c1_speeds[0]))) {
+    s_i2c1_speed_index++;
+    s_i2c1_error_streak = 0U;
+  }
+}
+
+void I2C1_AdaptiveSuccess(void) { s_i2c1_error_streak = 0U; }
+uint32_t I2C1_GetClockHz(void) { return s_i2c1_speeds[s_i2c1_speed_index]; }
+uint32_t I2C1_GetErrorCount(void) { return s_i2c1_errors; }
+uint32_t I2C1_GetTimeoutCount(void) { return s_i2c1_timeouts; }
 
 /* USER CODE END 0 */
 
@@ -40,7 +62,7 @@ void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 1399999;
+  hi2c1.Init.ClockSpeed = I2C1_GetClockHz();
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;

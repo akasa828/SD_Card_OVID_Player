@@ -108,7 +108,10 @@ static volatile uint8_t s_i2c_recover_pending = 0U;
  */
 void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef* hi2c)
 {
-    if (hi2c == &hi2c1) OLED_DMA_Busy = 0;
+    if (hi2c == &hi2c1) {
+        OLED_DMA_Busy = 0;
+        I2C1_AdaptiveSuccess();
+    }
 }
 
 /**
@@ -118,6 +121,7 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef* hi2c)
 {
     if (hi2c == &hi2c1) {
         OLED_DMA_Busy = 0U;
+        I2C1_AdaptiveFailure(0U);
         s_i2c_recover_pending = 1U;
     }
 }
@@ -134,6 +138,7 @@ static int OLED_DMA_Send(uint16_t mode, uint8_t* data, uint16_t size)
     OLED_DMA_Busy = 1U;
     if (HAL_I2C_Mem_Write_DMA(&hi2c1, OLED_I2C_ADDRESS, mode,
                               I2C_MEMADD_SIZE_8BIT, data, size) != HAL_OK) {
+        I2C1_AdaptiveFailure(0U);
         OLED_Recover_I2C();
         return 0;
     }
@@ -162,12 +167,17 @@ void OLED_Wait_DMA()
     uint32_t start = HAL_GetTick();
     while (OLED_DMA_Busy) {
         if ((HAL_GetTick() - start) > OLED_DMA_TIMEOUT_MS) {
+            I2C1_AdaptiveFailure(1U);
             OLED_Recover_I2C();
             break;
         }
     }
     if (s_i2c_recover_pending) OLED_Recover_I2C();
 }
+
+uint32_t OLED_Get_I2C_Error_Count(void) { return I2C1_GetErrorCount(); }
+uint32_t OLED_Get_I2C_Timeout_Count(void) { return I2C1_GetTimeoutCount(); }
+uint32_t OLED_Get_I2C_Clock(void) { return I2C1_GetClockHz(); }
 
 /**
  * @brief  向 OLED 写入一个命令/数据字节 (DMA)
@@ -221,18 +231,24 @@ void OLED_Init(){
 
     // 5. 配置为水平寻址模式
     OLED_Write_Byte(0x20,CMD); // 0x20: 设置内存寻址模式 (Set Memory Addressing Mode)
-    OLED_Write_Byte(0x00,CMD); // 0x00: 开启水平寻址模式 (Horizontal Addressing Mode)
+#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+    OLED_Write_Byte(0x02,CMD); // SH1106 page addressing
+#else
+    OLED_Write_Byte(0x00,CMD); // SSD1306 horizontal addressing
+#endif
 
     // 6. 限定寻址边界（将水平寻址的自动弹回窗口锁定在全屏范围内）
-    OLED_Write_Byte(0x21,CMD); // 0x21: 设置列起始与结束地址范围 (Set Column Address)
-    OLED_Write_Byte(0x00,CMD); // 0x00: 列起始地址限制为 0
-    OLED_Write_Byte(OLED_WIDTH - 1, CMD);  // 列结束地址 = 宽度 - 1
-    OLED_Write_Byte(0x22,CMD); // 0x22: 设置页起始与结束地址范围 (Set Page Address)
-    OLED_Write_Byte(0x00,CMD); // 0x00: 页起始地址限制为 0
-    OLED_Write_Byte(OLED_PAGES - 1, CMD);  // 页结束地址 = 页数 - 1
+#if OLED_CONTROLLER == OLED_CONTROLLER_SSD1306
+    OLED_Write_Byte(0x21,CMD);
+    OLED_Write_Byte(OLED_COLUMN_OFFSET,CMD);
+    OLED_Write_Byte(OLED_COLUMN_OFFSET + OLED_WIDTH - 1, CMD);
+    OLED_Write_Byte(0x22,CMD);
+    OLED_Write_Byte(0x00,CMD);
+    OLED_Write_Byte(OLED_PAGES - 1, CMD);
+#endif
 
     // 7. 翻转显示方向（默认 180° 镜像）
-    OLED_Set_Mirror(1,1);
+    OLED_Set_Mirror(OLED_DEFAULT_H_FLIP, OLED_DEFAULT_V_FLIP);
 
     // 8. COM硬件引脚及电气电平配置
     OLED_Write_Byte(0xDA,CMD); // 0xDA: 设置COM引脚硬件配置 (Set COM Pins Hardware Configuration)
@@ -251,8 +267,13 @@ void OLED_Init(){
     OLED_Write_Byte(0xA6,CMD); // 0xA6: 设置正常显示模式 (Set Normal Display)
 
     // 11. 启动内置升压电荷泵（3.3V供电下必须开启此项屏幕才会亮）
-    OLED_Write_Byte(0x8D,CMD); // 0x8D: 内置电荷泵设置 (Charge Pump Setting)
-    OLED_Write_Byte(0x14,CMD); // 0x14: 开启内置电荷泵升压电路 (Enable Charge Pump)
+#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+    OLED_Write_Byte(0xAD,CMD); // SH1106 DC-DC control
+    OLED_Write_Byte(0x8B,CMD); // DC-DC ON
+#else
+    OLED_Write_Byte(0x8D,CMD); // SSD1306 charge pump setting
+    OLED_Write_Byte(0x14,CMD); // charge pump ON
+#endif
 
     // ==================【防雪花屏体验】==================
     // 在开机前，强制把单片机的空数组推送到 OLED 的显存里。
@@ -271,7 +292,19 @@ void OLED_Init(){
  * @brief  将显存 OLED_GRAM 整帧刷新到屏幕（DMA）
  */
 void OLED_GRAM_Refresh(){
+#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+    static uint8_t page_cmd[3];
+    for (uint8_t page = 0U; page < OLED_PAGES; ++page) {
+        page_cmd[0] = (uint8_t)(0xB0U | page);
+        page_cmd[1] = (uint8_t)(OLED_COLUMN_OFFSET & 0x0FU);
+        page_cmd[2] = (uint8_t)(0x10U | ((OLED_COLUMN_OFFSET >> 4U) & 0x0FU));
+        (void)OLED_DMA_Send(CMD, page_cmd, sizeof(page_cmd));
+        OLED_Wait_DMA();
+        (void)OLED_DMA_Send(DATA, OLED_GRAM[page], OLED_WIDTH);
+    }
+#else
     OLED_DMA_Send(DATA, OLED_GRAM[0], OLED_GRAM_SIZE);
+#endif
 }
 
 // ==================== 双缓冲管理 ====================
@@ -418,16 +451,26 @@ void OLED_Clear(){
  */
 void OLED_Sleep(){
     OLED_Write_Byte(0xAE, CMD);          // 关闭显示
+#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+    OLED_Write_Byte(0xAD, CMD);
+    OLED_Write_Byte(0x8A, CMD);
+#else
     OLED_Write_Byte(0x8D, CMD);          // 电荷泵设置
     OLED_Write_Byte(0x10, CMD);          // 关闭电荷泵
+#endif
 }
 
 /**
  * @brief  从休眠中唤醒（开启电荷泵和显示）
  */
 void OLED_Wake(){
+#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+    OLED_Write_Byte(0xAD, CMD);
+    OLED_Write_Byte(0x8B, CMD);
+#else
     OLED_Write_Byte(0x8D, CMD);          // 电荷泵设置
     OLED_Write_Byte(0x14, CMD);          // 开启电荷泵
+#endif
     OLED_Write_Byte(0xAF, CMD);          // 开启显示
 }
 
@@ -1408,6 +1451,14 @@ void OLED_Refresh_Rect(int16_t x0, int16_t y0, int16_t dx, int16_t dy)
 
     // 交集为空
     if (xl >= xr || yu >= yd) goto exit;
+#if OLED_CONTROLLER == OLED_CONTROLLER_SH1106
+#if OLED_USE_DOUBLE_BUFFER
+    if (draw_buffer != OLED_GRAM) (void)memcpy(OLED_GRAM, draw_buffer, sizeof(OLED_GRAM));
+#endif
+    OLED_Wait_DMA();
+    OLED_GRAM_Refresh();
+    goto exit;
+#endif
     {
         uint8_t  pg_start  = (uint8_t)(yu >> 3);
         uint8_t  pg_end    = (uint8_t)((yd - 1) >> 3);
@@ -1674,8 +1725,6 @@ void OLED_Scroll_Soft_Horizontal(int16_t offset)
         memcpy(row + n, temp, OLED_WIDTH - n);
     }
 }
-
-
 
 
 
