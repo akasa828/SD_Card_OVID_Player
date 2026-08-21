@@ -2,7 +2,8 @@ param(
     [string]$Version = "1.3.0-beta.1",
     [string]$WindowsVersion = "1.3.0.1",
     [string]$OutputRoot = "",
-    [string]$PythonExecutable = ""
+    [string]$PythonExecutable = "",
+    [switch]$SkipInstaller
 )
 
 $ErrorActionPreference = "Stop"
@@ -81,18 +82,21 @@ if (-not $ffmpeg) {
 $archive = Join-Path $OutputRoot "OVID_Converter_Windows_x64_Portable_v$Version.zip"
 Compress-Archive -LiteralPath $appRoot -DestinationPath $archive -CompressionLevel Optimal
 
-$isccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-$isccPath = if ($isccCommand) { $isccCommand.Source } else { $null }
-if (-not $isccPath) {
-    $candidates = @(
-        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-        "C:\Program Files\Inno Setup 6\ISCC.exe",
-        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
-    )
-    foreach ($candidate in $candidates) {
-        if (Test-Path -LiteralPath $candidate) {
-            $isccPath = $candidate
-            break
+$isccPath = $null
+if (-not $SkipInstaller) {
+    $isccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    $isccPath = if ($isccCommand) { $isccCommand.Source } else { $null }
+    if (-not $isccPath) {
+        $candidates = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe",
+            (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
+        )
+        foreach ($candidate in $candidates) {
+            if (Test-Path -LiteralPath $candidate) {
+                $isccPath = $candidate
+                break
+            }
         }
     }
 }
@@ -103,8 +107,10 @@ if ($isccPath) {
         "/DSourceDir=$appRoot" `
         "/DOutputDir=$OutputRoot"
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup packaging failed." }
-} else {
+} elseif (-not $SkipInstaller) {
     throw "Inno Setup was not found; Setup.exe cannot be built."
+} else {
+    Write-Host "Installer skipped; portable EXE and ZIP were still created."
 }
 
 Write-Host "Portable package: $archive"
