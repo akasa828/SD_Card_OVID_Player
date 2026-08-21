@@ -4,6 +4,28 @@
 
 ## Unreleased
 
+暂无。
+
+## v1.2.6 驱动模块化预发布（2026-08-21）
+
+> `v1.2.3`、`v1.2.4` 与 `v1.2.5` 未公开发布；本次版本按计划直接使用 `v1.2.6`。
+
+### Firmware and drivers
+
+- 将 OLED 驱动核心改为 `OLED_PortOps` 端口接口，DMA、恢复、计时和诊断不再直接依赖固定 `hi2c1` 或 HAL 全局回调。
+- 将 SD SPI 核心改为带 `context` 的 `SD_IO` 接口，不再包含固定 SPI 句柄、PB0 片选、OLED 或 STM32 HAL 类型。
+- 新增可配置的 STM32 HAL I2C/SPI 适配层，并由播放器应用显式转发 OLED DMA 事件、绑定 SD 卡与 FatFs 物理盘。
+- OLED 保留双缓冲、自适应 I2C、DMA 超时恢复；SD 保留 CRC、容量扫描、热拔插、诊断和可恢复自检行为。
+- 新增统一应用版本宏 `1.2.6`，诊断页不再写死旧版 `FW V1.2.1`。
+
+### Reusable drivers
+
+- 新增独立项目 `STM32-HAL-SSD1306-SH1106`，包含平台无关核心、STM32 HAL 适配层、完整 F103 示例与中英文文档。
+- 新增独立项目 `STM32-HAL-SPI-SD-FatFs`，包含 SD 协议核心、可绑定 FatFs `diskio`、STM32 HAL 适配层与文件读写示例。
+- 播放器继续保留两个驱动的版本化源码副本，并新增来源记录与同步脚本，下载 ZIP 后无需联网获取驱动。
+- 三个项目新增 GitHub Actions 编译检查；驱动项目从 `v1.0.0` 开始发布。
+- 播放器 Debug 构建保留 `-g3` 调试符号并改用 `-Os`，避免 GNU Arm 13/14 代码尺寸差异导致 64 KiB Flash 溢出。
+
 ### Documentation
 
 - 新增完整英文 README，以及 OVID 教程、格式说明、屏幕移植和故障排查的英文文档；中英文页面均提供语言切换入口。

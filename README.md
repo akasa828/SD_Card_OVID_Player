@@ -94,7 +94,8 @@ SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频�
 ## 🗺️ 未来计划
 
 - [ ] 受限于 STM32F103C8T6 当前的 Flash 和 RAM 容量，计划将播放器移植到 ESP32，并在资源更充足的平台上继续扩展功能。
-- [ ] 将 SPI Micro SD + FatFs 文件系统驱动和 SSD1306/SH1106 OLED 驱动分别整理成可独立使用、方便移植的模块。
+- [x] 将 SPI Micro SD + FatFs 文件系统驱动和 SSD1306/SH1106 OLED 驱动分别整理成可独立使用、方便移植的模块。
+- [ ] 简化从图片、GIF 或视频素材生成 OVID `.BIN` 文件的转换流程，减少对多个外部图形工具和中间文件的依赖。
 
 <a id="features"></a>
 
@@ -118,8 +119,8 @@ SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频�
 
 | 内容 | 位置 |
 |---|---|
-| SSD1306/SH1106 OLED 绘图、双缓冲与 I2C DMA 驱动 | `STM32F103/Core/OLED/` |
-| SPI Micro SD 驱动与 FatFs `diskio` 对接 | `STM32F103/Core/Micro_SD/`、`STM32F103/Core/fatfs/` |
+| SSD1306/SH1106 OLED 绘图、双缓冲与 I2C DMA 驱动 | [独立驱动项目](https://github.com/akasa828/STM32-HAL-SSD1306-SH1106) · `STM32F103/Core/OLED/` |
+| SPI Micro SD 驱动与 FatFs `diskio` 对接 | [独立驱动项目](https://github.com/akasa828/STM32-HAL-SPI-SD-FatFs) · `STM32F103/Core/Micro_SD/`、`STM32F103/Core/fatfs/` |
 | Img2Lcd 帧合并与 OVID 打包、校验工具 | `tools/` |
 | VS Code、CMake 与 ST-Link 构建调试配置 | `SD_Card_OVID_Player.code-workspace`、`STM32F103/.vscode/`、`STM32F103/CMakePresets.json` |
 
@@ -143,7 +144,7 @@ SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频�
 8. **插卡并播放。** 将 `DEMO.BIN` 放入 `/function`，插卡并复位。三张卡信息页结束后，用上下键选择文件，按确认键播放；播放中再次按确认键返回列表。
 
 > [!NOTE]
-> 首次配置需要联网下载项目声明的 STM32 工具 bundles。目前 GitHub Releases 只发布 `v1.2.2`；用于测试播放和错误处理的示例 `.BIN` 文件请从 [最新 Release](https://github.com/akasa828/SD_Card_OVID_Player/releases/latest) 下载。
+> 首次配置需要联网下载项目声明的 STM32 工具 bundles。`v1.2.2` 仍是稳定版，驱动模块化版本 `v1.2.6` 先以 prerelease 提供；用于测试播放和错误处理的示例 `.BIN` 文件可在 Releases 中下载。
 
 <a id="motivation"></a>
 
@@ -401,13 +402,13 @@ SD 卡根目录/
 
 | 构建 | Flash | RAM |
 |---|---:|---:|
-| Debug (`-Og -g3`) | 60,608 B / 64 KiB（92.48%） | 9,920 B / 20 KiB（48.44%） |
-| Release (`-Os -g0`) | 54,020 B / 64 KiB（82.43%） | 9,912 B / 20 KiB（48.40%） |
+| Debug (`-Os -g3`) | 55,812 B / 64 KiB（85.16%） | 10,040 B / 20 KiB（49.02%） |
+| Release (`-Os -g0`) | 55,800 B / 64 KiB（85.14%） | 10,040 B / 20 KiB（49.02%） |
 
 > [!NOTE]
-> Debug 的 Flash 看起来已经很接近 64 KiB，主要是因为它保留了完整诊断路径，并使用更适合调试的优化设置。平时运行建议使用 Release；不过 82.43% 也不算非常宽裕，继续增加字库或大段 UI 文案前仍然要看一次 `arm-none-eabi-size`。
+> Debug 仍保留完整诊断路径和 `-g3` 调试符号，但为兼容不同版本 GNU Arm 工具链的代码尺寸，也使用 `-Os`。单步调试时个别变量可能被优化；平时运行仍建议使用 Release。85% 左右的 Flash 占用并不算非常宽裕，继续增加字库或大段 UI 文案前仍然要看一次 `arm-none-eabi-size`。
 
-当前已经完成 128×32、128×64、128×128 和 96×64 的 Debug/Release 编译验证，也覆盖了 SSD1306、SH1106 两条控制器分支。128×128 最大矩阵配置占用 11,968 B RAM（58.44%）。转换工具的回归测试包含大帧、FPS 边界、奇数高度、零帧，以及头部 CRC16 和逐帧 CRC32 损坏检测。
+当前已经重新完成 128×32、128×64、128×128 和 96×64 的编译验证，也覆盖了 SSD1306、SH1106 两条控制器分支。128×128 Debug 最大矩阵配置占用 12,088 B RAM（59.02%）。转换工具检查覆盖 Python 语法和 OVID 测试文件重新生成流程。
 
 30 分钟连续播放、真实热拔插，以及不同 OLED 模块在 1.4 MHz 下的信号完整性仍然属于目标板测试，主机编译不能替代这些结果。
 
@@ -425,7 +426,7 @@ SD 卡根目录/
 
 ## 📝 最近一次更新
 
-当前公开的固件版本为 **v1.2.2**，使用 OVID v2。固件包含看门狗与 HardFault 记录、长文件名浏览、诊断模式、I2C 自动降速，以及按 16 ms 周期运行的 UI 动画。容量扫描会平滑追赶真实进度，文件列表也包含选择框缓动、文件名滚动和元数据轮播。
+当前稳定固件版本为 **v1.2.2**；**v1.2.6** 是驱动模块化预发布版。它把 OLED 与 SD + FatFs 的公共核心拆成独立项目，同时在播放器中保留带来源记录的内置副本，下载 ZIP 后仍可离线构建。
 
 完整的版本记录放在 [CHANGELOG.md](CHANGELOG.md)
 

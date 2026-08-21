@@ -7,8 +7,8 @@
   *          SD_Card 句柄支持多卡槽并发。向后兼容的全局 API 使用默认实例 g_sd_card。
   *
   *          命名规范：所有公开 API 以 "SD_" 为前缀，下划线间单词首字母大写。
-  *          返回值：核心 API 返回 int（SD_OK=0 成功，负值=错误码）；
-  *                  向后兼容包装返回 HAL_StatusTypeDef（映射到 HAL_OK/HAL_ERROR/HAL_TIMEOUT）。
+  *          返回值：核心 API 返回 int（SD_OK=0 成功，负值=错误码）。
+  *          STM32 HAL 兼容包装单独位于 Port/SD_reader_compat.h。
   ******************************************************************************
   */
 #ifndef __SD_READER_H
@@ -20,7 +20,6 @@ extern "C" {
 
 //========== 头文件 ==============
 #include <stdint.h>
-#include "main.h"   /* HAL_StatusTypeDef / SPI_HandleTypeDef —— 仅向后兼容包装需要 */
 
 //====================================================================
 //  通用返回码（跨平台，不依赖 HAL）
@@ -55,18 +54,6 @@ extern "C" {
 #define SD_SPI_SPEED_HIGH      1U   /* 高速数据传输档 */
 #define SD_SPI_SPEED_NULL      2U   /* 未探测/未知速率 */
 /** @} */
-
-/* 分频器寄存器值（写入 SPI_CR1 BR[2:0]） */
-#define SD_SPI_PRESCALER_LOW   SPI_BAUDRATEPRESCALER_256   /* 72MHz/256 ≈ 281kHz（握手） */
-#define SD_SPI_PRESCALER_HIGH  SPI_BAUDRATEPRESCALER_16    /* 72MHz/16 = 4.5MHz（提速档）。
-                                * 面包板若读写出错(花屏/挂载失败)就调回 _32=2.25M；
-                                * 焊板/短线稳定可再提 _8=9M。这是帧率的主要旋钮之一。 */
-
-/* 片选控制 —— 向后兼容宏；新代码应使用 SD_IO.cs_low / cs_high 回调 */
-#define SD_CS_GPIO_Port   GPIOB
-#define SD_CS_Pin         GPIO_PIN_0
-#define SD_CS_LOW()       (SD_CS_GPIO_Port->BSRR = (uint32_t)SD_CS_Pin << 16U)
-#define SD_CS_HIGH()      (SD_CS_GPIO_Port->BSRR = (uint32_t)SD_CS_Pin)
 
 /**
  * @name R1 应答标志位
@@ -203,66 +190,59 @@ extern "C" {
  * @note  所有硬件操作通过函数指针回调完成。回调名中的 "dma" 仅为历史命名，
  *        语义是"同步搬完整块"，后端用 DMA 或轮询均可（默认 STM32 后端用轮询）。
  *        移植步骤：
- *        1. 实现 spi_byte / recv_dma / send_dma / cs_low / cs_high 等回调
+ *        1. 实现 spi_byte / receive / send / cs_low / cs_high 等回调
  *        2. 填充 SD_IO 结构体
  *        3. 调用 SD_Init_Card(&your_card) 即可
- *        若 io 未绑定，SD_Init_Card 会自动调用 SD_Init_Default_IO 绑定 STM32 HAL。
+ *        IO 必须由平台适配层显式绑定，未绑定时初始化返回 SD_PARAM_ERR。
  */
 typedef struct SD_IO {
+    void *context;
     /**
      * @brief 单字节 SPI 全双工交换（阻塞式）
      * @note  用于命令/应答/令牌收发。对单字节场景，轮询比 DMA 更快。
      * @param tx 要发送的字节
      * @retval 从机在同一组时钟内返回的字节
      */
-    uint8_t (*spi_byte)(uint8_t tx);
+    uint8_t (*spi_byte)(void *context, uint8_t tx);
 
     /**
      * @brief 批量接收（用于读块）
      * @note  名字里的 "dma" 是历史遗留：本回调只约定"一次调用搬完 len 字节并同步返回"，
      *        用 DMA 还是轮询由后端自行决定。**默认 STM32 后端是轮询**——实测 SPI+DMA
-     *        返回错位/损坏数据，改为单次 HAL_SPI_TransmitReceive 传整块（见
-     *        _stm32_recv_dma）。若你的后端确实用 DMA，需在回调内部自行等待完成并处理超时。
+     *        若后端使用 DMA，需在回调内部等待完成并处理超时。
      * @param rx  接收缓冲区指针
      * @param len 字节数（通常为 SD_BLOCK_SIZE = 512）
      * @retval SD_OK 成功；负值 = 错误码
      */
-    int (*recv_dma)(uint8_t *rx, uint16_t len);
+    int (*receive)(void *context, uint8_t *rx, uint16_t len);
 
     /**
      * @brief 批量发送（用于写块）
-     * @note  同 recv_dma：名称为历史遗留，默认 STM32 后端为轮询实现，语义是同步阻塞。
+     * @note  默认 STM32 后端为轮询实现，语义是同步阻塞。
      * @param tx  发送缓冲区指针（只读）
      * @param len 字节数（通常为 SD_BLOCK_SIZE = 512）
      * @retval SD_OK 成功；负值 = 错误码
      */
-    int (*send_dma)(const uint8_t *tx, uint16_t len);
+    int (*send)(void *context, const uint8_t *tx, uint16_t len);
 
     /** @brief 片选拉低（选中 SD 卡） */
-    void (*cs_low)(void);
+    void (*cs_low)(void *context);
 
     /** @brief 片选拉高（释放 SD 卡），实现需在拉高后补 8 个时钟 */
-    void (*cs_high)(void);
+    void (*cs_high)(void *context);
 
     /**
      * @brief 设置 SPI 时钟分频
      * @param prescaler_val 分频器寄存器值（如 SPI_BAUDRATEPRESCALER_256）
      * @retval SD_OK 成功；SD_ERR 失败
      */
-    int (*set_speed)(uint32_t prescaler_val);
+    int (*set_speed)(void *context, uint8_t speed);
 
     /**
      * @brief 读取当前 SPI 分频器寄存器值
      * @retval 当前 prescaler 寄存器编码值
      */
-    uint32_t (*get_prescaler)(void);
-
-    /**
-     * @brief 获取 SPI 所在总线时钟频率（Hz）
-     * @note  用于 _sd_detect_speed() 计算实际 SCK
-     * @retval 总线时钟频率（Hz）
-     */
-    uint32_t (*get_bus_clk)(void);
+    uint32_t (*get_sck_hz)(void *context);
 
     /**
      * @brief 毫秒级单调时间戳
@@ -270,7 +250,11 @@ typedef struct SD_IO {
      *        （所有超时比较均使用差值方式 `(now - start) < timeout`）。
      * @retval 当前毫秒时间戳
      */
-    uint32_t (*tick_ms)(void);
+    uint32_t (*tick_ms)(void *context);
+
+    void (*deinit)(void *context);
+    uint32_t (*enter_critical)(void *context);
+    void (*exit_critical)(void *context, uint32_t state);
 
     /**
      * @brief CRC 校验开关
@@ -311,7 +295,7 @@ typedef struct SD_CardInfo {
  *        使用前先 SD_Init_Card() 完成初始化握手。
  *
  * @warning 本驱动**非重入**：每个句柄的一次事务会跨多次 SPI 收发持续拉低 CS，
- *          期间独占 hspi1 总线。请仅从主循环（单一上下文）调用，
+ *          期间独占该实例绑定的 SPI 总线。请仅从主循环（单一上下文）调用，
  *          不要从中断里调用任何 SD_* 接口，也不要在一次事务进行中从别处再次进入。
  *
  *          busy 标志保护的覆盖范围（务必按实际情况理解，勿假设全部加锁）：
@@ -331,7 +315,7 @@ typedef struct SD_Card {
     volatile uint8_t busy;   /**< 重入保护标志：叶子事务进行中置 1（内部使用，勿手动改） */
 } SD_Card;
 
-/** @brief 默认全局实例（STM32 HAL 预绑定），向后兼容 API 使用此实例 */
+/** @brief 默认全局实例，需由应用显式绑定 IO */
 extern SD_Card g_sd_card;
 
 //====================================================================
@@ -339,13 +323,11 @@ extern SD_Card g_sd_card;
 //====================================================================
 
 /**
- * @brief 用 STM32 HAL 默认回调填充 SD_IO（hspi1 + PB0 CS）
- * @note  仅在 STM32 平台可用。其他平台需自行填充 SD_IO。
- *         若 SD_Init_Card() 检测到 io.spi_byte 为 NULL 会主动调用本函数，
- *         因此多数情况下用户无需手动调用。
- * @param card SD 卡句柄指针（不可为 NULL）
+ * @brief 将平台 IO 回调绑定到卡实例
+ * @param card SD 卡句柄指针
+ * @param io 完整的平台 IO 回调表
  */
-void SD_Init_Default_IO(SD_Card *card);
+int SD_Card_BindIO(SD_Card *card, const SD_IO *io);
 
 /**
  * @brief 初始化 SD 卡（完整上电握手协议）
@@ -581,22 +563,6 @@ uint8_t SD_Get_Type_Card(const SD_Card *card);
 uint16_t SD_CRC16(const uint8_t *data, uint16_t len);
 
 //====================================================================
-//  演示
-//====================================================================
-
-/**
- * @brief 查询卡容量/CID 并显示到 OLED（演示用）
- * @note  若卡未初始化会先调用 SD_Init_Card()。显示卡类型、容量、总块数、
- *         制造商 ID(MID)、OEM ID(OID)、产品名(PNM)、序列号(PSN)。
- *         **平台依赖**：依赖 oled.hpp。
- * @param card SD 卡句柄指针（不可为 NULL）
- * @retval SD_OK      显示成功
- * @retval SD_NO_CARD 初始化失败（无卡/不兼容）
- * @retval 其他负值   初始化错误码
- */
-int SD_Show_Info_Card(SD_Card *card);
-
-//====================================================================
 //  自检
 //====================================================================
 
@@ -605,7 +571,7 @@ int SD_Show_Info_Card(SD_Card *card);
  * @note  流程：初始化（含自动切高速时钟）→ 保存目标块原数据 → 写入已知图案 →
  *         读回逐字节比对 → 还原原数据。
  *         任何步骤失败均尽力还原原数据，避免残留测试图案。
- *         自检过程通过 OLED（oled.hpp）显示各步骤结果。
+ *         该模块不负责 UI 或日志，调用方根据返回码自行展示结果。
  * @param card       SD 卡句柄指针（不可为 NULL）
  * @param test_block 用于读写测试的块地址（建议选远离文件系统常用区的块号，如 8192）
  * @retval SD_OK 全部通过
@@ -617,114 +583,7 @@ int SD_Show_Info_Card(SD_Card *card);
 int SD_Self_Test_Card(SD_Card *card, uint32_t test_block);
 #endif
 
-//====================================================================
-//  向后兼容 API（静态内联包装，使用全局 g_sd_card）
-//  以下函数签名与旧版驱动完全兼容，已有业务代码无需修改。
-//  返回值映射：SD_OK → HAL_OK, SD_TIMEOUT → HAL_TIMEOUT, 其余 → HAL_ERROR
-//====================================================================
-
-/**
- * @brief 初始化 SD 卡（兼容旧版接口）
- * @note  等价于 SD_Init_Card(&g_sd_card)，返回值映射为卡类型。
- * @retval 正数 = @ref SD_TYPE_*；SD_TYPE_NONE(0) = 失败
- */
-static inline uint8_t SD_Init(void)
-{
-    int ret = SD_Init_Card(&g_sd_card);
-    return (ret > 0) ? (uint8_t)ret : SD_TYPE_NONE;
-}
-
-/** @brief 读取单块（兼容旧版，等价于 SD_Read_Block_Card(&g_sd_card, ...)） */
-static inline HAL_StatusTypeDef SD_Read_Block(uint32_t block_addr, uint8_t *buf)
-{
-    int ret = SD_Read_Block_Card(&g_sd_card, block_addr, buf);
-    return (ret == SD_OK) ? HAL_OK : ((ret == SD_TIMEOUT) ? HAL_TIMEOUT : HAL_ERROR);
-}
-
-/** @brief 写入单块（兼容旧版，等价于 SD_Write_Block_Card(&g_sd_card, ...)） */
-static inline HAL_StatusTypeDef SD_Write_Block(uint32_t block_addr, const uint8_t *buf)
-{
-    int ret = SD_Write_Block_Card(&g_sd_card, block_addr, buf);
-    return (ret == SD_OK) ? HAL_OK : ((ret == SD_TIMEOUT) ? HAL_TIMEOUT : HAL_ERROR);
-}
-
-/** @brief 多块读（兼容旧版，等价于 SD_Read_Multi_Block_Card(&g_sd_card, ...)） */
-static inline HAL_StatusTypeDef SD_Read_Multi_Block(uint32_t block_addr,
-                                                     uint8_t *buf, uint32_t count)
-{
-    int ret = SD_Read_Multi_Block_Card(&g_sd_card, block_addr, buf, count);
-    return (ret == SD_OK) ? HAL_OK : ((ret == SD_TIMEOUT) ? HAL_TIMEOUT : HAL_ERROR);
-}
-
-/** @brief 多块写（兼容旧版，等价于 SD_Write_Multi_Block_Card(&g_sd_card, ...)） */
-static inline HAL_StatusTypeDef SD_Write_Multi_Block(uint32_t block_addr,
-                                                      const uint8_t *buf, uint32_t count)
-{
-    int ret = SD_Write_Multi_Block_Card(&g_sd_card, block_addr, buf, count);
-    return (ret == SD_OK) ? HAL_OK : ((ret == SD_TIMEOUT) ? HAL_TIMEOUT : HAL_ERROR);
-}
-
-/** @brief 擦除（兼容旧版，等价于 SD_Erase_Blocks_Card(&g_sd_card, ...)） */
-static inline HAL_StatusTypeDef SD_Erase_Blocks(uint32_t start_block, uint32_t end_block)
-{
-    int ret = SD_Erase_Blocks_Card(&g_sd_card, start_block, end_block);
-    return (ret == SD_OK) ? HAL_OK : ((ret == SD_TIMEOUT) ? HAL_TIMEOUT : HAL_ERROR);
-}
-
-/** @brief 读卡状态（兼容旧版，等价于 SD_Get_Status_Card(&g_sd_card, ...)） */
-static inline HAL_StatusTypeDef SD_Get_Status(uint16_t *status)
-{
-    int ret = SD_Get_Status_Card(&g_sd_card, status);
-    return (ret == SD_OK) ? HAL_OK : ((ret == SD_TIMEOUT) ? HAL_TIMEOUT : HAL_ERROR);
-}
-
-/** @brief 读 CID（兼容旧版，等价于 SD_Get_CID_Card(&g_sd_card, ...)） */
-static inline HAL_StatusTypeDef SD_Get_CID(uint8_t buf[16])
-{
-    int ret = SD_Get_CID_Card(&g_sd_card, buf);
-    return (ret == SD_OK) ? HAL_OK : ((ret == SD_TIMEOUT) ? HAL_TIMEOUT : HAL_ERROR);
-}
-
-/** @brief 设速率（兼容旧版，等价于 SD_Set_Speed_Card(&g_sd_card, ...)） */
-static inline HAL_StatusTypeDef SD_Set_Speed(uint8_t speed)
-{
-    int ret = SD_Set_Speed_Card(&g_sd_card, speed);
-    return (ret == SD_OK) ? HAL_OK : HAL_ERROR;
-}
-
-/** @brief 获取卡信息（兼容旧版，等价于 SD_Get_Info_Card(&g_sd_card)） */
-static inline const SD_CardInfo *SD_Get_Info(void)
-{
-    return SD_Get_Info_Card(&g_sd_card);
-}
-
-/** @brief 获取卡类型（兼容旧版，等价于 SD_Get_Type_Card(&g_sd_card)） */
-static inline uint8_t SD_Get_Type(void)
-{
-    return SD_Get_Type_Card(&g_sd_card);
-}
-
-/** @brief 反初始化（兼容旧版，等价于 SD_DeInit_Card(&g_sd_card)） */
-static inline void SD_DeInit(void)
-{
-    SD_DeInit_Card(&g_sd_card);
-}
-
-/** @brief 自检（兼容旧版，等价于 SD_Self_Test_Card(&g_sd_card, ...)） */
-#if SD_ENABLE_SELF_TEST
-static inline HAL_StatusTypeDef SD_Self_Test(uint32_t test_block)
-{
-    int ret = SD_Self_Test_Card(&g_sd_card, test_block);
-    return (ret == SD_OK) ? HAL_OK : ((ret == SD_TIMEOUT) ? HAL_TIMEOUT : HAL_ERROR);
-}
-#endif
-
-/** @brief 显示卡信息到 OLED（兼容旧版，等价于 SD_Show_Info_Card(&g_sd_card)） */
-static inline HAL_StatusTypeDef SD_Show_Info(void)
-{
-    int ret = SD_Show_Info_Card(&g_sd_card);
-    return (ret == SD_OK) ? HAL_OK : HAL_ERROR;
-}
+/* STM32 HAL legacy wrappers are intentionally isolated in SD_reader_compat.h. */
 
 /**
  * @brief 发送 SD 命令帧并读回 R1 应答（兼容旧版）
