@@ -1,0 +1,71 @@
+name: Bug report / 错误报告
+description: Report a reproducible firmware, UI, storage, or tool problem
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请完整填写硬件与复现信息。Please provide the hardware details and a reproducible case.
+  - type: input
+    id: version
+    attributes:
+      label: Firmware version or commit / 固件版本或提交
+      placeholder: v1.2.6 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: board
+    attributes:
+      label: STM32 board / STM32 板卡
+      placeholder: STM32F103C8T6, 64 KiB Flash
+    validations:
+      required: true
+  - type: input
+    id: oled
+    attributes:
+      label: OLED
+      placeholder: SSD1306, 128x64, I2C 1.4 MHz
+    validations:
+      required: true
+  - type: input
+    id: sd
+    attributes:
+      label: SD card and module / SD 卡与模块
+      placeholder: 8 GB, FAT32, SPI Micro SD module
+    validations:
+      required: true
+  - type: input
+    id: ovid
+    attributes:
+      label: OVID file / OVID 文件
+      placeholder: 128x64, 15 FPS, 1200 frames, OVID v2
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps / 复现步骤
+      placeholder: |
+        1. Power on...
+        2. Insert the card...
+        3. Select...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior / 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: UART log and screenshots / 串口日志与截图
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist / 检查
+      options:
+        - label: I checked the wiring and common ground / 已检查接线与共地
+          required: true
+        - label: I searched existing Issues / 已搜索现有 Issue
+          required: true

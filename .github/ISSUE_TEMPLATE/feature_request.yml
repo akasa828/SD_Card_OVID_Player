@@ -1,0 +1,34 @@
+name: Feature request / 功能建议
+description: Suggest a focused improvement to firmware, tools, or documentation
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case / 问题或使用场景
+      description: Describe the need before describing the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior / 建议行为
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 范围
+      options:
+        - Firmware or playback / 固件或播放
+        - OLED UI / OLED 界面
+        - SD or FatFs / SD 或 FatFs
+        - OVID tools / OVID 工具
+        - Build or VS Code / 构建或 VS Code
+        - Documentation / 文档
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Hardware constraints and alternatives / 硬件限制与替代方案
