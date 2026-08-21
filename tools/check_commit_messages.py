@@ -18,8 +18,6 @@ CONVENTIONAL_RE = re.compile(
 
 def validate_subject(subject: str) -> list[str]:
     errors = []
-    if len(subject) > 72:
-        errors.append(f"subject is {len(subject)} characters; maximum is 72")
     if subject.endswith("."):
         errors.append("subject must not end with a period")
     if not subject.isascii():

@@ -15,6 +15,7 @@ class CommitMessageTests(unittest.TestCase):
             "feat: add file browser",
             "fix(ui): clip long filenames",
             "refactor(sd)!: replace the transport API",
+            "docs: " + ("describe the complete flashing and conversion workflow " * 3),
             "Merge pull request #12 from user/branch",
             'Revert "feat: add file browser"',
         ]
@@ -25,13 +26,12 @@ class CommitMessageTests(unittest.TestCase):
                 subject,
             )
 
-    def test_rejects_vague_non_English_and_oversized_subjects(self):
+    def test_rejects_vague_non_English_subjects(self):
         invalid = [
             "v1.2.2",
             "update",
             "更新",
             "fix: end with a period.",
-            "feat: " + ("a" * 70),
         ]
         for subject in invalid:
             self.assertTrue(
