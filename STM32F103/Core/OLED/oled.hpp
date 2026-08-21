@@ -10,6 +10,7 @@
 #define __OLED_HPP
 
 #include "stdint.h"
+#include "oled_port.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -116,7 +117,6 @@ extern const uint8_t DATA;
 // ==================== DMA 标志位与回调 ====================
 extern volatile uint8_t OLED_DMA_Busy;
 void OLED_Wait_DMA(void);
-void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef* hi2c);
 uint32_t OLED_Get_I2C_Error_Count(void);
 uint32_t OLED_Get_I2C_Timeout_Count(void);
 uint32_t OLED_Get_I2C_Clock(void);
@@ -125,7 +125,7 @@ uint32_t OLED_Get_I2C_Clock(void);
 void OLED_Write_Byte(uint8_t cmd, uint8_t mode);
 
 // ==================== 设备检测 ====================
-HAL_StatusTypeDef OLED_Detect(void);
+int OLED_Detect(void);
 
 // ==================== 初始化和刷新 ====================
 void OLED_Init(void);

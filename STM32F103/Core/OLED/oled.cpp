@@ -10,11 +10,8 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include "stdint.h" // 引入标准平台无关整型
-#include "main.h"
-#include "i2c.h"
 #include "fonts.hpp"
 #include "oled.hpp"
-#include "system_diag.h"
 
 /* 便携式 CTZ（Count Trailing Zeros）— 兼容 GCC / ARMCC / IAR */
 #if defined(__GNUC__) || defined(__clang__)
@@ -98,33 +95,37 @@ const uint8_t DATA = 0x40; //数据命令
 
 volatile uint8_t OLED_DMA_Busy = 0;
 static volatile uint8_t s_i2c_recover_pending = 0U;
+static OLED_PortOps s_port = {0};
+static uint32_t s_port_errors = 0U;
+static uint32_t s_port_timeouts = 0U;
 
 #ifndef OLED_DMA_TIMEOUT_MS
 /* 默认 128x64 为 114 ms，并随显存容量增长。 */
 #define OLED_DMA_TIMEOUT_MS (50U + (OLED_GRAM_SIZE / 16U))
 #endif
 
-/**
- * @brief  I2C DMA 发送完成回调，清除忙标志
- */
-void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef* hi2c)
+int OLED_BindPort(const OLED_PortOps *ops)
 {
-    if (hi2c == &hi2c1) {
-        OLED_DMA_Busy = 0;
-        I2C1_AdaptiveSuccess();
-    }
+    if (ops == NULL || ops->write_dma == NULL || ops->tick_ms == NULL)
+        return OLED_PORT_NOT_BOUND;
+    s_port = *ops;
+    OLED_DMA_Busy = 0U;
+    s_i2c_recover_pending = 0U;
+    return OLED_PORT_OK;
 }
 
-/**
- * @brief  I2C 错误回调，清除忙标志以解除阻塞
- */
-void HAL_I2C_ErrorCallback(I2C_HandleTypeDef* hi2c)
+void OLED_NotifyTxComplete(void)
 {
-    if (hi2c == &hi2c1) {
-        OLED_DMA_Busy = 0U;
-        I2C1_AdaptiveFailure(0U);
-        s_i2c_recover_pending = 1U;
-    }
+    OLED_DMA_Busy = 0U;
+    if (s_port.on_success != NULL) s_port.on_success(s_port.context);
+}
+
+void OLED_NotifyError(void)
+{
+    OLED_DMA_Busy = 0U;
+    s_port_errors++;
+    if (s_port.on_failure != NULL) s_port.on_failure(s_port.context, 0U);
+    s_i2c_recover_pending = 1U;
 }
 
 static void OLED_Recover_I2C(void);
@@ -136,10 +137,12 @@ static void OLED_Recover_I2C(void);
 static int OLED_DMA_Send(uint16_t mode, uint8_t* data, uint16_t size)
 {
     OLED_Wait_DMA();
+    if (s_port.write_dma == NULL) return 0;
     OLED_DMA_Busy = 1U;
-    if (HAL_I2C_Mem_Write_DMA(&hi2c1, OLED_I2C_ADDRESS, mode,
-                              I2C_MEMADD_SIZE_8BIT, data, size) != HAL_OK) {
-        I2C1_AdaptiveFailure(0U);
+    if (s_port.write_dma(s_port.context, OLED_I2C_ADDRESS,
+                         (uint8_t)mode, data, size) != OLED_PORT_OK) {
+        s_port_errors++;
+        if (s_port.on_failure != NULL) s_port.on_failure(s_port.context, 0U);
         OLED_Recover_I2C();
         return 0;
     }
@@ -151,9 +154,8 @@ static void OLED_Recover_I2C(void)
 {
     OLED_DMA_Busy = 0U;
     s_i2c_recover_pending = 0U;
-    if (hi2c1.hdmatx != NULL) (void)HAL_DMA_Abort(hi2c1.hdmatx);
-    (void)HAL_I2C_DeInit(&hi2c1);
-    MX_I2C1_Init();
+    if (s_port.abort_dma != NULL) (void)s_port.abort_dma(s_port.context);
+    if (s_port.recover != NULL) (void)s_port.recover(s_port.context);
     s_i2c_recover_pending = 0U;
 }
 
@@ -165,21 +167,31 @@ static void OLED_Recover_I2C(void)
 void OLED_Wait_DMA()
 {
     if (s_i2c_recover_pending) OLED_Recover_I2C();
-    uint32_t start = HAL_GetTick();
+    if (s_port.tick_ms == NULL) return;
+    uint32_t start = s_port.tick_ms(s_port.context);
     while (OLED_DMA_Busy) {
-        SystemDiag_FeedWatchdog();
-        if ((HAL_GetTick() - start) > OLED_DMA_TIMEOUT_MS) {
-            I2C1_AdaptiveFailure(1U);
+        if ((s_port.tick_ms(s_port.context) - start) > OLED_DMA_TIMEOUT_MS) {
+            s_port_timeouts++;
+            if (s_port.on_failure != NULL) s_port.on_failure(s_port.context, 1U);
             OLED_Recover_I2C();
             break;
         }
+        if (s_port.idle != NULL) s_port.idle(s_port.context);
     }
     if (s_i2c_recover_pending) OLED_Recover_I2C();
 }
 
-uint32_t OLED_Get_I2C_Error_Count(void) { return I2C1_GetErrorCount(); }
-uint32_t OLED_Get_I2C_Timeout_Count(void) { return I2C1_GetTimeoutCount(); }
-uint32_t OLED_Get_I2C_Clock(void) { return I2C1_GetClockHz(); }
+uint32_t OLED_Get_I2C_Error_Count(void) {
+    return s_port.get_error_count != NULL
+        ? s_port.get_error_count(s_port.context) : s_port_errors;
+}
+uint32_t OLED_Get_I2C_Timeout_Count(void) {
+    return s_port.get_timeout_count != NULL
+        ? s_port.get_timeout_count(s_port.context) : s_port_timeouts;
+}
+uint32_t OLED_Get_I2C_Clock(void) {
+    return s_port.get_clock_hz != NULL ? s_port.get_clock_hz(s_port.context) : 0U;
+}
 
 /**
  * @brief  向 OLED 写入一个命令/数据字节 (DMA)
@@ -379,7 +391,7 @@ float OLED_Calc_FPS(void)
         float   val;   // 最近一次有效的 FPS 计算结果
     } s;
 
-    uint32_t now = HAL_GetTick();          // 当前时刻
+    uint32_t now = s_port.tick_ms != NULL ? s_port.tick_ms(s_port.context) : 0U;
     uint32_t dt  = now - s.mark;           // 距上次采样的毫秒增量
 
     s.cnt++;                                // 本帧计数
@@ -411,7 +423,7 @@ uint16_t OLED_Calc_FPS_Int(void)
         uint16_t val;
     } s;
 
-    uint32_t now = HAL_GetTick();
+    uint32_t now = s_port.tick_ms != NULL ? s_port.tick_ms(s_port.context) : 0U;
     uint32_t dt  = now - s.mark;
 
     s.cnt++;
@@ -563,8 +575,9 @@ void OLED_SW_Invert_Rect(int16_t x0, int16_t y0, int16_t dx, int16_t dy)
  * @retval HAL_OK: 设备正常; HAL_ERROR: 无应答; HAL_BUSY: 总线忙; HAL_TIMEOUT: 超时
  * @param  该函数在设备多的情况下可以配合状态机使用
  */
-HAL_StatusTypeDef OLED_Detect(void){
-    return HAL_I2C_IsDeviceReady(&hi2c1, OLED_I2C_ADDRESS, 3, 100);
+int OLED_Detect(void){
+    if (s_port.device_ready == NULL) return OLED_PORT_NOT_BOUND;
+    return s_port.device_ready(s_port.context, OLED_I2C_ADDRESS, 3U, 100U);
 }
 
 /**
@@ -1727,8 +1740,6 @@ void OLED_Scroll_Soft_Horizontal(int16_t offset)
         memcpy(row + n, temp, OLED_WIDTH - n);
     }
 }
-
-
 
 
 
