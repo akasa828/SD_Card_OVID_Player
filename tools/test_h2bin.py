@@ -20,7 +20,7 @@ class H2BinTests(unittest.TestCase):
                 h2bin.write_ovid(target, [frame], 200, 64, 30)
                 result = h2bin.cmd_info(SimpleNamespace(file=str(target)))
             self.assertEqual(result, 0)
-            self.assertEqual(target.stat().st_size, 16 + 1600)
+            self.assertEqual(target.stat().st_size, 16 + 1600 + 4)
 
     def test_zero_fps_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -39,9 +39,28 @@ class H2BinTests(unittest.TestCase):
     def test_info_rejects_zero_frame_count(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "bad.bin"
-            target.write_bytes(struct.pack("<4sBB2sIH2s", b"OVID", 8, 8,
-                                           b"\0\0", 0, 15, b"\0\0"))
+            target.write_bytes(h2bin.make_header(8, 8, 0, 15, h2bin.OVID_V1))
             with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(h2bin.cmd_info(SimpleNamespace(file=str(target))), 1)
+
+    def test_v1_remains_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "legacy.bin"
+            frame = bytes(range(8))
+            with contextlib.redirect_stdout(io.StringIO()):
+                h2bin.write_ovid(target, [frame], 8, 8, 15, h2bin.OVID_V1)
+                self.assertEqual(h2bin.cmd_info(SimpleNamespace(file=str(target))), 0)
+            self.assertEqual(target.stat().st_size, 16 + 8)
+
+    def test_v2_detects_corrupt_frame(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "crc.bin"
+            with contextlib.redirect_stdout(io.StringIO()):
+                h2bin.write_ovid(target, [bytes(8)], 8, 8, 15)
+            data = bytearray(target.read_bytes())
+            data[16] ^= 0x01
+            target.write_bytes(data)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(h2bin.cmd_info(SimpleNamespace(file=str(target))), 1)
 
 
