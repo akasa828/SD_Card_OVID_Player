@@ -1,0 +1,31 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: debug-128x64-ssd1306, type: Debug, width: 128, height: 64, controller: 0 }
+          - { name: release-128x64-ssd1306, type: Release, width: 128, height: 64, controller: 0 }
+          - { name: debug-128x32-ssd1306, type: Debug, width: 128, height: 32, controller: 0 }
+          - { name: debug-96x64-ssd1306, type: Debug, width: 96, height: 64, controller: 0 }
+          - { name: debug-128x128-ssd1306, type: Debug, width: 128, height: 128, controller: 0 }
+          - { name: debug-128x64-sh1106, type: Debug, width: 128, height: 64, controller: 1 }
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi python3
+      - run: >-
+          cmake -S STM32F103 -B STM32F103/build/${{ matrix.name }} -G Ninja
+          -DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake
+          -DCMAKE_BUILD_TYPE=${{ matrix.type }}
+          -DOLED_WIDTH_OVERRIDE=${{ matrix.width }}
+          -DOLED_HEIGHT_OVERRIDE=${{ matrix.height }}
+          -DOLED_CONTROLLER_OVERRIDE=${{ matrix.controller }}
+      - run: cmake --build STM32F103/build/${{ matrix.name }} --parallel
+      - run: python3 -m py_compile tools/h2bin.py tools/merge_img2lcd.py tools/generate_popup_bins.py

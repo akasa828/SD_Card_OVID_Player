@@ -93,7 +93,8 @@ The repository is organized by target platform: `STM32F103/` contains the comple
 ## 🗺️ Roadmap
 
 - [ ] Because the STM32F103C8T6 is currently limited by its available Flash and RAM, port the player to ESP32 and continue developing it on a platform with more resources.
-- [ ] Separate the SPI Micro SD + FatFs filesystem driver and the SSD1306/SH1106 OLED driver into independent, reusable, and easier-to-port modules.
+- [x] Separate the SPI Micro SD + FatFs filesystem driver and the SSD1306/SH1106 OLED driver into independent, reusable, and easier-to-port modules.
+- [ ] Simplify the workflow for converting images, GIFs, or video sources into OVID `.BIN` files, reducing the need for multiple external graphics tools and intermediate files.
 
 <a id="features"></a>
 
@@ -116,8 +117,8 @@ If you do not need the complete player, these modules can still be useful on the
 
 | Component | Location |
 |---|---|
-| SSD1306/SH1106 drawing, double-buffering, and I2C DMA driver | `STM32F103/Core/OLED/` |
-| SPI Micro SD driver and FatFs `diskio` integration | `STM32F103/Core/Micro_SD/`, `STM32F103/Core/fatfs/` |
+| SSD1306/SH1106 drawing, double-buffering, and I2C DMA driver | [Standalone driver](https://github.com/akasa828/STM32-HAL-SSD1306-SH1106) · `STM32F103/Core/OLED/` |
+| SPI Micro SD driver and FatFs `diskio` integration | [Standalone driver](https://github.com/akasa828/STM32-HAL-SPI-SD-FatFs) · `STM32F103/Core/Micro_SD/`, `STM32F103/Core/fatfs/` |
 | Img2Lcd frame merging and OVID packing/validation tools | `tools/` |
 | VS Code, CMake, and ST-Link build/debug configuration | `SD_Card_OVID_Player.code-workspace`, `STM32F103/.vscode/`, `STM32F103/CMakePresets.json` |
 
@@ -141,7 +142,7 @@ This project is developed in VS Code with the [STM32CubeIDE for Visual Studio Co
 8. **Insert the card and play.** Copy `DEMO.BIN` into `/function`, insert the card, and reset the board. After the three card-information pages finish, use Up and Down to select a file and press Confirm to play it. Press Confirm again during playback to return to the file list.
 
 > [!NOTE]
-> The initial setup needs an internet connection to download the STM32 tool bundles declared by the project. GitHub Releases currently provides firmware version `v1.2.2` only. Download the sample `.BIN` files for normal playback and error handling from the [latest Release](https://github.com/akasa828/SD_Card_OVID_Player/releases/latest).
+> The initial setup needs an internet connection to download the declared STM32 tool bundles. `v1.2.2` remains stable, while the modular-driver build `v1.2.6` is provided first as a prerelease. Sample `.BIN` files for playback and error handling are available from Releases.
 
 <a id="motivation"></a>
 
@@ -397,13 +398,13 @@ The values below were measured with Arm GNU Toolchain 14.3.1, the default 128×6
 
 | Build | Flash | RAM |
 |---|---:|---:|
-| Debug (`-Og -g3`) | 60,608 B / 64 KiB (92.48%) | 9,920 B / 20 KiB (48.44%) |
-| Release (`-Os -g0`) | 54,020 B / 64 KiB (82.43%) | 9,912 B / 20 KiB (48.40%) |
+| Debug (`-Og -g3`) | 62,724 B / 64 KiB (95.71%) | 10,048 B / 20 KiB (49.06%) |
+| Release (`-Os -g0`) | 55,800 B / 64 KiB (85.14%) | 10,040 B / 20 KiB (49.02%) |
 
 > [!NOTE]
-> Debug Flash usage is close to 64 KiB mainly because it retains the complete diagnostic paths and uses optimization settings suited to debugging. Release is recommended for normal operation. Even so, 82.43% is not a huge amount of spare capacity, so check `arm-none-eabi-size` before adding another font or a large block of UI text.
+> Debug Flash usage is close to 64 KiB mainly because it retains the complete diagnostic paths and uses optimization settings suited to debugging. Release is recommended for normal operation. Even so, 85.14% is not a huge amount of spare capacity, so check `arm-none-eabi-size` before adding another font or a large block of UI text.
 
-Debug and Release builds have been verified for 128×32, 128×64, 128×128, and 96×64, including both SSD1306 and SH1106 controller branches. The largest 128×128 matrix configuration uses 11,968 B of RAM (58.44%). Conversion-tool regression tests cover large frames, FPS boundaries, odd heights, zero frames, header CRC16 failures, and per-frame CRC32 failures.
+The 128×32, 128×64, 128×128, and 96×64 configurations have been rebuilt, including both SSD1306 and SH1106 controller branches. The largest 128×128 Debug configuration uses 12,096 B of RAM (59.06%). Tool checks cover Python syntax and regeneration of the OVID test files.
 
 A 30-minute continuous playback run, real card hot removal, and signal integrity at 1.4 MHz across different OLED modules remain target-hardware tests. A successful host build cannot replace those checks.
 
@@ -421,7 +422,7 @@ Issues and pull requests about display porting, SD compatibility, OVID tools, or
 
 ## 📝 Latest Update
 
-The current public firmware version is **v1.2.2** and uses OVID v2. It includes a watchdog and HardFault capture, long-filename browsing, diagnostic mode, automatic I2C fallback, and UI animations running on a 16 ms cycle. Free-space scanning follows the real progress smoothly, while the file list adds eased selection movement, filename scrolling, and rotating metadata.
+The current stable firmware is **v1.2.2**; **v1.2.6** is a driver-modularization prerelease. It publishes the common OLED and SD + FatFs cores as standalone projects while retaining versioned embedded copies so a downloaded ZIP still builds offline.
 
 The complete version history is available in [CHANGELOG.md](CHANGELOG.md).
 

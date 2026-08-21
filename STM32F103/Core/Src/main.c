@@ -32,6 +32,9 @@
 #include "function.h"
 #include "oled.hpp"
 #include "system_diag.h"
+#include "oled_stm32_hal.h"
+#include "sd_stm32_hal.h"
+#include "sd_fatfs.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,6 +57,8 @@
 /* USER CODE BEGIN PV */
 /* 调试器可直接观察：非零表示已进入不可恢复故障。 */
 volatile uint32_t g_fatal_error_marker = 0U;
+static OLED_STM32_HAL s_oled_hal;
+static SD_STM32_HAL s_sd_hal;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -64,6 +69,19 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void oled_reinitialize(void *context, I2C_HandleTypeDef *i2c)
+{
+  (void)context;
+  (void)i2c;
+  MX_I2C1_Init();
+}
+
+static void oled_success(void *context) { (void)context; I2C1_AdaptiveSuccess(); }
+static void oled_failure(void *context, uint8_t timeout)
+{ (void)context; I2C1_AdaptiveFailure(timeout); }
+static uint32_t oled_clock(void *context) { (void)context; return I2C1_GetClockHz(); }
+static uint32_t oled_errors(void *context) { (void)context; return I2C1_GetErrorCount(); }
+static uint32_t oled_timeouts(void *context) { (void)context; return I2C1_GetTimeoutCount(); }
 
 /* USER CODE END 0 */
 
@@ -105,6 +123,23 @@ int main(void)
    * 两次初始化只有后者生效，保留 HAL 那次白占约 680B Flash + 72B RAM(huart1)。
    * 若将来需要串口接收（RX），改回调用本函数并改用 HAL_UART_* 收发。 */
   /* USER CODE BEGIN 2 */
+  s_oled_hal.i2c = &hi2c1;
+  s_oled_hal.reinitialize = oled_reinitialize;
+  s_oled_hal.success = oled_success;
+  s_oled_hal.failure = oled_failure;
+  s_oled_hal.clock_hz = oled_clock;
+  s_oled_hal.error_count = oled_errors;
+  s_oled_hal.timeout_count = oled_timeouts;
+  if (OLED_STM32_HAL_Attach(&s_oled_hal) != OLED_PORT_OK) Error_Handler();
+
+  s_sd_hal.spi = &hspi1;
+  s_sd_hal.cs_port = GPIOB;
+  s_sd_hal.cs_pin = GPIO_PIN_0;
+  s_sd_hal.low_prescaler = SPI_BAUDRATEPRESCALER_256;
+  s_sd_hal.high_prescaler = SPI_BAUDRATEPRESCALER_16;
+  if (SD_STM32_HAL_Attach(&g_sd_card, &s_sd_hal) != SD_OK ||
+      SD_FatFs_Attach(&g_sd_card) != SD_OK) Error_Handler();
+
   OLED_Init();
 
   SD_Debug_UART_Init();    // 调试串口 USART1 PA9@115200，printf 重定向（无 OLED 也能看信息）
@@ -134,6 +169,16 @@ int main(void)
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
+}
+
+void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *i2c)
+{
+  OLED_STM32_HAL_HandleTxComplete(&s_oled_hal, i2c);
+}
+
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *i2c)
+{
+  OLED_STM32_HAL_HandleError(&s_oled_hal, i2c);
 }
 
 /**

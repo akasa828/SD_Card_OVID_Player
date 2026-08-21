@@ -1,0 +1,10 @@
+#ifndef APP_VERSION_H
+#define APP_VERSION_H
+
+#define APP_VERSION_MAJOR 1
+#define APP_VERSION_MINOR 2
+#define APP_VERSION_PATCH 6
+#define APP_VERSION_STRING "1.2.6"
+#define APP_VERSION_DISPLAY "FW V1.2.6"
+
+#endif
