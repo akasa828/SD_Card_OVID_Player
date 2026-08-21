@@ -1,86 +1,90 @@
-# SD_card_mp4_mode_player
+# SD Card OVID Player
 
-基于 STM32F103C8T6、SPI Micro SD 卡和 SSD1306 类单色 OLED 的离线帧视频播放器。固件从 FatFs 文件系统中浏览 OVID `.BIN` 文件，由三个按键选择视频，按文件头帧率循环播放到 OLED。
+这是一个给 STM32F103C8T6 做的离线 OLED 视频播放器。视频文件放在 Micro SD 卡里，单片机负责浏览文件、检查格式，再按照文件中记录的帧率把画面送到 SSD1306 或 SH1106 单色屏上。整个过程只需要三个按键，不依赖电脑或网络。
+
+项目最初是按 128×64 屏幕写的，后来才逐步把尺寸、显存、菜单布局和播放缓冲改成由宏定义推导。现在换屏时通常只需要调整 `OLED_WIDTH` 和 `OLED_HEIGHT`，但最终能不能显示，仍然取决于控制器的寻址范围和 STM32F103 的 RAM。
 
 > [!IMPORTANT]
-> 项目名虽然包含 `mp4`，STM32 **不直接解码 MP4**。MP4、GIF、PNG/JPG 图片序列或 C 取模数组需先在电脑上转换为 OVID v1 `.BIN`，再复制到 SD 卡。
+> 这里有一个很容易误解的地方：项目名里虽然有 `mp4`，STM32 **不会直接解码 MP4**。固件真正读取的是 OVID（可以理解为 OLED Video）`.BIN` 文件，也就是为单色 OLED 准备的页主序帧数据。图片、GIF、C 取模数组，或者从 MP4 中导出的图片序列，都要先在电脑上转换。
 
-## 功能
+## 从哪里开始
 
-- SPI1 驱动 Micro SD，FatFs 读取 FAT12、FAT16、FAT32 文件系统。
-- 完整启动状态机：等待插卡 → 初始化 → 容量分析 → 三张信息页 → 文件列表 → 播放。
-- 使用 FatFs `f_getfree()` 强制扫描 FAT 获取准确剩余容量，不读取可能过期的 FAT32 FSInfo。
-- 区分 SD 物理容量与文件系统卷容量，并显示文件系统类型、卷总量、剩余量和已用比例。
-- 优先扫描 `/function` 中的 `.BIN`；该目录不存在或无 `.BIN` 时回退到根目录。
-- PB1 / PB10 / PB11 三按键浏览、选择和退出播放。
-- 严格校验 OVID magic、宽高、帧数、帧率和文件总长度。
-- `1–120 FPS` 按文件头播放，使用余数累计消除整数毫秒截断造成的长期速度漂移。
-- OLED 双缓冲 + I2C DMA；整屏帧直接读入后台显存，小尺寸帧按页居中合成。
-- 屏幕尺寸、显存容量、菜单行数和软件滚动均由 OLED 宏推导，不依赖 128×64、1024 B 或 2 的幂宽度。
-- 支持非页对齐的视频高度；末页无效位会被屏蔽。
-- 信息页和文件列表每 500 ms 在线探测，连续两次失败判定拔卡；播放中读失败也会统一卸载并返回等待插卡界面。
-- 统一的标题栏、卡片、页码点、进度条、动画弹窗、空文件页和滑动转场。
-- USART1 TX 输出 SD 卡、挂载、播放器和致命错误诊断。
+- [先跑起来](#先跑起来)
+- [硬件与接线](#硬件与接线)
+- [构建固件](#构建固件)
+- [准备 SD 卡](#准备-sd-卡)
+- [生成 OVID 文件](#生成-ovid-文件)
+- [按键和启动流程](#按键和启动流程)
+- [OVID 文件格式](#ovid-文件格式)
+- [适配其他屏幕](#适配其他屏幕)
+- [诊断与常见问题](#诊断与常见问题)
 
-## 硬件要求
+## 先跑起来
 
-- STM32F103C8T6 最小系统板（本工程链接脚本按 64 KiB Flash / 20 KiB RAM）。
-- SSD1306 或接口/寻址方式兼容的 I2C 单色 OLED。
-- SPI 接口 Micro SD 卡模块，使用 3.3 V 逻辑电平。
+如果你只是想先看到它工作，不必一开始就研究 FatFs、DMA 和 OVID 的每个字段。按下面的顺序做就可以。
+
+1. 按[接线表](#接线表)连接 OLED、Micro SD 模块和三个按键。SD 模块、OLED 与单片机必须共地，并确认模块使用 3.3 V 逻辑电平。
+2. 安装 CMake、Ninja 和 Arm GNU Toolchain，在项目根目录构建 Release 固件：
+
+   ```bash
+   cmake --preset Release
+   cmake --build --preset Release
+   ```
+
+   生成的固件位于 `build/Release/SD_card_mp4_mode_player.elf`，用你习惯的 ST-Link 工具烧录即可。
+
+3. 把 SD 卡格式化为 FAT 或 FAT32，并在根目录新建 `function` 文件夹。
+4. 用 `tools/h2bin.py` 把图片目录或 GIF 转成 `.BIN`。例如：
+
+   ```bash
+   python -m pip install Pillow
+   python tools/h2bin.py from-images frames/ DEMO.BIN -W 128 -H 64 --fps 15
+   ```
+
+5. 将 `DEMO.BIN` 放进 `/function`，插卡上电。三张卡信息页显示完以后，用上下键选文件，按确认键播放；播放中再按一次确认键即可返回列表。
+
+仓库没有附带预编译固件或现成演示视频，所以屏幕尺寸、烧录方式和素材仍需要按自己的硬件准备。
+
+## 它现在能做什么
+
+播放器会先等待 SD 卡，挂载成功后计算卷容量、扫描视频文件，并依次显示存储、卡片和身份信息。文件优先从 `/function` 读取；这个目录不存在或没有 `.BIN` 时，才回退到根目录。
+
+播放端兼容 OVID v1 和 v2。v2 增加了文件头 CRC16 与逐帧 CRC32，一帧损坏时不会把错误画面刷到 OLED，而是保留上一帧继续读取。帧率范围是 1–120 FPS，计时会累计毫秒除法的余数，长时间播放不会因为整数截断越跑越慢。
+
+UI 使用 OLED 双缓冲和 I2C DMA。文件列表支持长按加速、选中位置记忆、长文件名往返滚动，以及分辨率、帧率、帧数和格式版本轮播。正常的 128×64、1.4 MHz I2C 环境下，动画按 16 ms 周期刷新；遇到 SD 超时或 I2C/DMA 故障恢复时，流畅度会暂时让位给可靠性。
+
+拔卡也不需要复位。信息页和文件列表每 500 ms 探测一次卡状态，连续两次失败后会卸载 FatFs 并回到等待插卡界面。播放中发生读错误时走的是同一套恢复流程。
+
+## 硬件与接线
+
+当前工程使用以下硬件：
+
+- STM32F103C8T6 最小系统板；链接脚本按 64 KiB Flash、20 KiB RAM 配置。
+- SSD1306 或 SH1106 I2C 单色 OLED。
+- SPI 接口的 Micro SD 卡模块，使用 3.3 V 逻辑电平。
 - 三个常开按键。
-- 可选 3.3 V TTL 串口模块，用于查看 115200 8N1 诊断信息。
+- 可选的 3.3 V USB-TTL 模块，用来看串口诊断。
 
 ### 接线表
 
-| 功能 | STM32 引脚 | 连接到外设 | 说明 |
+| 功能 | STM32 引脚 | 外设端 | 说明 |
 |---|---:|---|---|
 | SPI1 SCK | PA5 | SD SCK/CLK | SPI mode 0 |
 | SPI1 MISO | PA6 | SD MISO/DO | SD → MCU |
 | SPI1 MOSI | PA7 | SD MOSI/DI | MCU → SD |
 | SD CS | PB0 | SD CS | 低电平选中 |
-| I2C1 SCL | PB6 | OLED SCL | 开漏，需上拉 |
-| I2C1 SDA | PB7 | OLED SDA | 开漏，需上拉 |
+| I2C1 SCL | PB6 | OLED SCL | 开漏，需要上拉 |
+| I2C1 SDA | PB7 | OLED SDA | 开漏，需要上拉 |
 | 上键 | PB1 | 按键另一端接 GND | 内部上拉，下降沿 EXTI |
 | 下键 | PB10 | 按键另一端接 GND | 内部上拉，下降沿 EXTI |
 | 确认键 | PB11 | 按键另一端接 GND | 内部上拉，下降沿 EXTI |
 | USART1 TX | PA9 | USB-TTL RX | 可选，115200 8N1，仅发送 |
 | 共地 | GND | SD/OLED/按键/串口 GND | 必须共地 |
-| 供电 | 3.3 V | SD/OLED VCC | 确认模块的电压与电平要求 |
-
-## 软件架构与启动流程
-
-1. HAL 初始化时钟、GPIO、DMA、I2C1 和 SPI1，OLED 与 USART1 TX 随后就绪。
-2. 约 60 FPS 绘制等待插卡动画，每 700 ms 尝试一次 SD 初始化。
-3. SD 驱动以低速完成握手、读取 CSD/CID，再切换到高速 SPI。
-4. FatFs 挂载卷；`f_getfree()` 扫描 FAT，计算文件系统卷总容量和准确剩余容量。
-5. 优先扫描 `/function`，其中没有 `.BIN` 时回退根目录。
-6. 依次显示 `STORAGE`、`CARD`、`IDENTITY` 三张信息页，每页总时长固定为 3000 ms。
-7. 滑动进入文件列表，由用户选择文件，不自动播放。
-8. 校验 OVID v1 文件头和总长度，将帧读入后台显存或按页居中合成，再按头部 FPS 循环播放。
-9. 退出播放返回列表；拔卡或磁盘读取失败则关闭文件、卸载 FatFs、清状态并返回等待插卡动画。
-
-### 三张卡信息页
-
-每张信息页的 3000 ms 包含完整转场：0–300 ms 从右侧滑入并扫光揭示，300–2700 ms 稳定显示，2700–3000 ms 向左退出。
-
-| 页面 | 内容 |
-|---|---|
-| `STORAGE` | FAT12/FAT16/FAT32 类型、卷总容量、剩余容量、已用比例进度条 |
-| `CARD` | SD 类型、物理容量、寻址模式、块数和实际 SPI 时钟 |
-| `IDENTITY` | MID/OID、产品名、版本、序列号和生产日期 |
-
-128×64 使用完整布局；128×32 会压缩字体和行距。所有坐标都从 `OLED_WIDTH`、`OLED_HEIGHT` 计算。
+| 供电 | 3.3 V | SD/OLED VCC | 先确认模块电压要求 |
 
 ## 构建固件
 
-### 环境
-
-- CMake 3.22 或更高版本。
-- Ninja。
-- Arm GNU Toolchain（`arm-none-eabi-gcc/g++/size`）。
-- Python 3（仅转换工具需要）。
-
-先确保 Arm GNU Toolchain 的 `bin` 目录已加入 `PATH`，然后在仓库根目录执行。Debug 使用 `-Og -g3`，在保留调试信息的同时确保固件可装入 64 KiB Flash：
+需要 CMake 3.22 或更高版本、Ninja 和 Arm GNU Toolchain。先把 `arm-none-eabi-gcc`、`arm-none-eabi-g++` 和 `arm-none-eabi-size` 所在的 `bin` 目录加入 `PATH`，然后在仓库根目录运行：
 
 ```bash
 # Debug
@@ -92,150 +96,216 @@ cmake --preset Release
 cmake --build --preset Release
 ```
 
-产物位置：
+对应产物是：
 
-- Debug：`build/Debug/SD_card_mp4_mode_player.elf`
-- Release：`build/Release/SD_card_mp4_mode_player.elf`
+- `build/Debug/SD_card_mp4_mode_player.elf`
+- `build/Release/SD_card_mp4_mode_player.elf`
 
-如需在 CI 中做屏幕尺寸编译验证，可传递 `-DOLED_WIDTH_OVERRIDE=<W> -DOLED_HEIGHT_OVERRIDE=<H>`。
+Debug 使用 `-Og -g3`，适合断点和故障排查；Release 使用 `-Os -g0`，更适合平时烧录。需要做屏幕或控制器编译验证时，可以给 CMake 传入以下覆盖项：
 
-## SD 卡准备
+```text
+-DOLED_WIDTH_OVERRIDE=<W>
+-DOLED_HEIGHT_OVERRIDE=<H>
+-DOLED_CONTROLLER_OVERRIDE=0|1
+-DOLED_COLUMN_OFFSET_OVERRIDE=<N>
+-DOLED_I2C_CLOCK_OVERRIDE=<Hz>
+```
 
-使用 FAT12、FAT16 或 FAT32，不支持 exFAT、NTFS。当前 FatFs 关闭了 LFN，因此文件名必须遵守 8.3 规则：主文件名最多 8 个字符，扩展名为 `.BIN`。例如 `BADAPPLE.BIN`、`VIDEO01.BIN`。
+## 准备 SD 卡
+
+固件支持 FAT12、FAT16 和 FAT32，不支持 exFAT 或 NTFS。FatFs 已开启最长 63 字符的长文件名，不过 OLED 字库只包含 ASCII 字符，文件名最好仍使用 ASCII 或西文字符。
+
+推荐的目录结构如下：
 
 ```text
 SD 卡根目录/
-├── function/          # 有 .BIN 时优先使用
+├── function/          # 这里有 .BIN 时优先使用
 │   ├── DEMO01.BIN
 │   └── DEMO02.BIN
-└── ROOTVID.BIN       # /function 无 .BIN 时才扫描根目录
+└── ROOTVID.BIN        # /function 没有 .BIN 时才会扫描到
 ```
 
-固件不会自动创建 `/function`。
+固件不会自动创建 `/function`。首次插卡时，`f_getfree()` 会实际扫描 FAT 来计算剩余空间，不相信可能已经过期的 FAT32 FSInfo，所以大容量或碎片较多的卡可能需要等几秒。进度条用千分比定点值平滑追赶真实扫描进度，活动点仍会持续移动，不会只按整数百分比一格一格跳。
 
-首次插卡的剩余容量分析可能持续数秒，尤其是大容量或碎片较多的卷。这是 `FF_FS_NOFSINFO=1` 下对 FAT 的实际扫描，用较长等待换取不依赖旧 FSInfo 缓存的准确结果。扫描期间 OLED 会显示 `FREE SPACE / SCANNING FAT xx%` 实时进度和活动光点；`100%` 只会在 `f_getfree()` 已真正返回后显示，随后切换到 `SCANNING FILES`。若容量查询出现非介质错误，页面显示 `Free: N/A`，但仍会尝试浏览文件；`FR_DISK_ERR`、`FR_NOT_READY` 会立即进入拔卡恢复。
+如果不想等待，可以在扫描页按确认键跳过。播放器会显示 `Free: N/A`，但仍然继续扫描文件并进入列表；`100%` 只会在 `f_getfree()` 真正返回后出现。
 
-## 生成 OVID 视频
+## 生成 OVID 文件
 
-工具位于 `tools/h2bin.py`。图片转换需要 Pillow：
+转换工具是 `tools/h2bin.py`。Python 的 `argparse`、`struct` 等模块都来自标准库；唯一需要另外安装的 Python 包是 Pillow：
 
 ```bash
 python -m pip install Pillow
 ```
 
-### 从图片目录或 GIF 生成
+### 图片目录或 GIF
 
 ```bash
-# 图片目录会按文件名中的数字自然排序；GIF 会展开为多帧
+# 图片目录按文件名中的数字自然排序；GIF 会自动展开为多帧
 python tools/h2bin.py from-images frames/ DEMO01.BIN -W 128 -H 64 --fps 15
 
-# 反色并调整二值化阈值
-python tools/h2bin.py from-images animation.gif DEMO02.BIN -W 128 -H 32 --fps 30 --threshold 140 --invert
+# 反色，并修改二值化阈值
+python tools/h2bin.py from-images animation.gif DEMO02.BIN \
+  -W 128 -H 32 --fps 30 --threshold 140 --invert
+
+# 需要兼容旧固件时，可以显式生成 OVID v1
+python tools/h2bin.py from-images frames/ LEGACY.BIN \
+  -W 128 -H 64 --fps 15 --v1
 ```
 
-### 从 C 头文件取模数组生成
+### MP4 或其他视频
+
+`h2bin.py` 不读取 MP4。如果原素材是视频，可以先用 FFmpeg 导出帧，再转换成 OVID。FFmpeg 只是这一环节的可选外部工具，不是固件或 Python 脚本的依赖。
+
+```bash
+mkdir frames
+ffmpeg -i input.mp4 -vf "fps=15,scale=128:64" frames/%06d.png
+python tools/h2bin.py from-images frames/ OUTPUT.BIN -W 128 -H 64 --fps 15
+```
+
+### C 头文件取模数组
 
 ```bash
 python tools/h2bin.py from-header "Core/隐藏关卡/bad apple.h" BADAPPLE.BIN \
   -W 128 -H 64 --fps 15 --match "^BMP"
 ```
 
-工具会过滤出长度正好等于 `ceil(height/8) × width` 的数组。默认按数组名中数字自然排序；可用 `--file-order`保留原文件顺序。
+脚本只保留长度正好等于 `ceil(height/8) × width` 的数组。默认按数组名中的数字自然排序；如需保留头文件里的出现顺序，可以加 `--file-order`。
 
-### 检查生成的文件
+生成后最好再检查一次：
 
 ```bash
 python tools/h2bin.py info BADAPPLE.BIN
 ```
 
-`from-images`、`from-header` 和 `info` 都会报告单帧字节数，以及能容纳该视频的最小 `OLED_WIDTH`、向上按 8 对齐的 `OLED_HEIGHT` 与 `OLED_GRAM_SIZE`。
+三个子命令都会报告格式版本、单帧字节数和最低屏幕宏。`info` 还会检查 v2 的头部 CRC16 和所有帧 CRC32。
 
-## 按键操作
+## 按键和启动流程
 
 | 按键 | 文件列表 | 播放中 |
 |---|---|---|
-| PB1 上 | 上一个文件，到顶后循环 | 无操作 |
-| PB10 下 | 下一个文件，到底后循环 | 无操作 |
-| PB11 确认 | 打开并播放选中文件 | 退出播放、返回列表 |
+| PB1 上 | 上一个文件；长按连续滚动并加速 | 无操作 |
+| PB10 下 | 下一个文件；长按连续滚动并加速 | 无操作 |
+| PB11 确认 | 播放选中的文件 | 停止播放并返回列表 |
 
-三键使用下降沿中断和约 150 ms 软件去抖。
+按键使用下降沿中断和大约 150 ms 的软件去抖。启动后的完整流程是：
 
-卡信息展示结束后只进入文件列表，不会自动播放第一个文件。列表无文件时显示动画空状态并周期重扫；将合法 `.BIN` 放入当前卷后可被自动发现。
+```text
+等待插卡 → 初始化 SD → 挂载 FatFs → 计算剩余空间
+         → 扫描文件 → 三张卡信息页 → 文件列表 → 播放
+```
 
-## OVID v1 文件格式
+三张信息页分别显示文件系统与卷容量、SD 卡类型与物理容量、CID 身份信息。每页停留 3000 ms；前 300 ms 中，白色区域从屏幕左侧横向扩张，扫过的文字和图形变成白底黑色，反显区域会保留到这一页结束。这里不是一条滑过后消失的窄光带，也没有旧版的整页滑入、滑出。
 
-文件头固定为 16 字节，多字节数值使用小端序。
+普通状态提示使用同样的横向反显语言；`Loading / 文件名` 和 `Library / Playback stopped` 保留中心小矩形展开、收起的动画。小方框弹窗停留 1200 ms，按确认键可以提前关闭。
+
+文件列表中，选中的长文件名静止约 700 ms 后开始往返滚动。底部信息每 1500 ms 在“分辨率/FPS”和“帧数/OVID 版本”之间切换；同一窗口内的选择框使用缓动，跨页时则直接对齐，避免选择框穿过无关条目。
+
+## OVID 文件格式
+
+OVID v1 和 v2 都使用固定的 16 字节小端序文件头：
 
 | 偏移 | 长度 | 字段 | 要求 |
 |---:|---:|---|---|
 | 0 | 4 | `magic` | ASCII `OVID` |
-| 4 | 1 | `width` | 视频宽，1–255，且不大于 `OLED_WIDTH` |
-| 5 | 1 | `height` | 视频高，1–255，可不是 8 的倍数，不大于 `OLED_HEIGHT` |
-| 6 | 2 | `rsv0` | 保留，转换工具写 0 |
+| 4 | 1 | `width` | 1–255，不能大于 `OLED_WIDTH` |
+| 5 | 1 | `height` | 1–255，可不是 8 的倍数，不能大于 `OLED_HEIGHT` |
+| 6 | 1 | `version` | v1 为 0，v2 为 2 |
+| 7 | 1 | `flags` | v1 为 0；v2 bit0 表示逐帧 CRC32 |
 | 8 | 4 | `frame_count` | 帧数，必须大于 0 |
-| 12 | 2 | `fps` | 帧率，1–120 |
-| 14 | 2 | `rsv1` | 保留，转换工具写 0 |
+| 12 | 2 | `fps` | 1–120 |
+| 14 | 2 | `header_crc16` | v1 为 0；v2 为前 14 字节的 CRC16-CCITT |
 
-每帧大小：
+单帧字节数为：
 
 ```text
 frame_bytes = ceil(height / 8) × width
 ```
 
-帧数据为 SSD1306 页主序：先存第 0 页的 `width` 列，再存第 1 页，依次类推。每字节 bit0 对应该页最上面的像素。若高度不是 8 的倍数，最后一页未使用的高位必须为 0，固件也会再次屏蔽它们。
+画面按 OLED 页主序保存：先写第 0 页的 `width` 列，再写第 1 页。视频高度不必正好是 8 的倍数，固件会屏蔽最后一页的无效位。v2 在每帧后追加 4 字节小端 CRC32；校验失败时保持上一帧，并继续尝试下一帧。
 
-固件还要求：
+完整文件长度必须严格满足：
 
 ```text
-file_size = 16 + frame_count × frame_bytes
+v1_file_size = 16 + frame_count × frame_bytes
+v2_file_size = 16 + frame_count × (frame_bytes + 4)
 ```
 
-较旧的 `fps=0` 文件不再合法，请重新转换。
+较早生成的 `fps=0` 文件已经不再合法，需要重新转换。
 
-## 适配其他屏幕尺寸
+## 适配其他屏幕
 
-修改 `Core/OLED/oled.hpp` 中的两个默认宏即可：
+这个项目最初就是按 128×64 写的。如果屏幕控制器兼容，通常只要修改 `Core/OLED/oled.hpp` 中的两个宏：
 
 ```c
 #define OLED_WIDTH  128
 #define OLED_HEIGHT 64
 ```
 
-其他容量宏会自动推导：
+显存会自动推导：
 
 ```text
 OLED_PAGES     = OLED_HEIGHT / 8
 OLED_GRAM_SIZE = OLED_PAGES × OLED_WIDTH
 ```
 
-合法宏范围：
+`OLED_WIDTH` 的合法范围是 1–255；`OLED_HEIGHT` 必须在 8–255 之间并能被 8 整除，所以实际最大值是 248。单帧可以超过过去固定的 1024 B，只要不超过当前 `OLED_GRAM_SIZE`。全屏视频直接读入后台显存，小尺寸视频只使用一行 `OLED_WIDTH` 大小的页缓冲，再居中合成。
 
-- `OLED_WIDTH`：1–255。
-- `OLED_HEIGHT`：8–255 之间且必须为 8 的倍数，因此实际最大为 248。
-- OVID 视频本身的高度可为奇数，但不能超过屏幕宏。
-- 单帧可超过 1024 B，只要不超过当前 `OLED_GRAM_SIZE`。
+控制器、列偏移和默认镜像也在同一文件里：
 
-这些是软件格式与编译期范围，不代表任意值都被实际显示控制器支持。SSD1306 的 GDDRAM、列/页地址范围和模组物理像素数是硬限制；STM32F103C8T6 仅有 20 KiB RAM，双缓冲会占用 `2 × OLED_GRAM_SIZE`，还需为 FatFs、SD 驱动和栈保留空间。更换分辨率时还应核对控制器初始化指令和硬件数据手册。
+```c
+#define OLED_CONTROLLER OLED_CONTROLLER_SSD1306  // 或 OLED_CONTROLLER_SH1106
+#define OLED_COLUMN_OFFSET 0                     // 常见 SH1106 模组为 2
+#define OLED_DEFAULT_H_FLIP 1
+#define OLED_DEFAULT_V_FLIP 1
+```
 
-## I2C 1.4 MHz 说明
+宏能通过编译并不等于硬件一定支持。控制器的 GDDRAM、列和页地址范围、模块的真实像素数都是硬限制；STM32F103C8T6 只有 20 KiB RAM，双缓冲、FatFs 长文件名和诊断缓冲也都要占空间。
 
-当前 `Core/Src/i2c.c` 配置为 `1,399,999 Hz`，是本项目现有硬件实测可稳定工作的超频参数，不是 SSD1306/I2C 通用保证值。稳定性会受 OLED 模块、走线长度、总线电容、上拉电阻和电源质量影响。如出现 NACK、花屏或 DMA 频繁超时，请在 STM32CubeMX/`i2c.c` 中降低到 400 kHz 或更低，并重新评估 DMA 超时余量。
+## 关于 1.4 MHz I2C
 
-## 常见问题
+默认的 `1,399,999 Hz` 是当前硬件上实际使用的配置，不代表每块 OLED、每种上拉电阻和每根连接线都能稳定工作。驱动会统计 NACK 和 DMA 超时，连续三次恢复失败后依次降到 1 MHz、800 kHz 和 400 kHz。
 
-| 现象 | 排查方向 |
-|---|---|
-| `NO .BIN FILES` | 确认扩展名为 `.BIN`、文件名符合 8.3、`/function` 或根目录中确实有文件；页面会周期重扫。 |
-| `MOUNT FAILED` / 一直等待插卡 | 确认 3.3 V、共地、PA5/6/7 和 PB0 接线，并通过 PA9 查看 FatFs 错误码。 |
-| `UNSUPPORTED FS` | 当前卷不是 FAT12/FAT16/FAT32；在电脑上备份数据后重新格式化为 FAT/FAT32。该错误页会保持到拔卡。 |
-| `BAD OVID` | 文件不是 OVID v1 或头部已损坏；用 `h2bin.py info` 检查。 |
-| `INVALID OVID` | 检查帧数、`1–120 FPS`、文件是否截断或多了尾随数据。 |
-| `FRAME TOO BIG` | 视频宽或高超过当前 OLED 宏；重新转换或更换屏幕配置。 |
-| `Free: N/A` | `f_getfree()` 返回了非介质错误；查看串口诊断。若文件浏览仍正常，播放器会继续工作。 |
-| 单帧超过 1024 B | v1.0.1 允许，但须不超过 `OLED_GRAM_SIZE`，并确保 RAM 余量足够。 |
-| OLED 花屏/闪烁 | 缩短 I2C 线、检查上拉和电源，必要时降低 1.4 MHz 时钟。 |
-| 信息页/列表中拔卡 | 最多约 1 秒（500 ms × 连续两次）确认后卸载卷，播放拔卡则由文件读取错误触发同一恢复路径。 |
-| 重新插卡仍失败 | 等待 700 ms 周期重试，同时检查串口的 SD 初始化与 FatFs 错误码。 |
+如果一上电就花屏或闪烁，先缩短连线、检查供电和上拉，再考虑降低 `I2C1_INITIAL_CLOCK_HZ`，或在配置 CMake 时传入 `OLED_I2C_CLOCK_OVERRIDE`。比起追求纸面速度，稳定刷新更重要。
+
+## 诊断与常见问题
+
+USART1 TX 会以 115200 8N1 输出 SD 初始化、FatFs、播放器、UI 帧率和故障信息。正常动画期间，串口每秒报告实际 FPS、最长帧间隔和超时帧数。SD 阻塞、DMA/I2C 恢复和自动降速不属于 60 FPS 的硬件验收区间。
+
+开机时同时按住上键和下键可以进入三页诊断界面。这里能看到复位原因、Flash/RAM、栈余量、按键、SD/SPI、OLED DMA、当前 I2C 速率和最近一次 HardFault 的 PC/LR/CFSR。第二页按确认会执行“保存原块 → 写入 → 读回 → 校验 → 恢复”的 SD 自检；虽然原数据会被写回，供电不稳定时仍然不建议运行。
+
+系统还启用了约 8 秒的独立看门狗。Debug 构建在调试器暂停内核时会冻结它，Release 则保持独立运行。HardFault 现场保存在 `.noinit` SRAM，重启后会通过屏幕和串口提示。
+
+### 为什么一直停在 Calculating free space？
+
+这一步在扫描整张 FAT，而不是读取 FAT32 中可能过期的缓存值。卡越大、碎片越多，第一次扫描越慢。活动点和进度条仍在移动就可以继续等待；如果只想尽快进入列表，按确认键跳过即可。
+
+如果动画彻底停止，先看 PA9 串口最后输出的阶段。固件已经为目录扫描加入 5 秒/8192 项保护，也修复过 `Preparing UI` 阶段由不安全 `%llu` 格式化触发的 HardFault；再次出现时，串口和诊断页里的故障地址会比屏幕现象更有用。
+
+### 为什么找不到 `.BIN`？
+
+先确认扩展名确实是 `.BIN`。固件优先扫描 `/function`，里面没有匹配文件才回退根目录；空文件页会周期重扫。文件名可以较长，但屏幕无法正确显示中文字形。
+
+### 为什么提示 Bad OVID、Invalid OVID 或 Frame too big？
+
+用下面的命令检查 magic、版本、CRC、帧率和文件总长度：
+
+```bash
+python tools/h2bin.py info YOUR_FILE.BIN
+```
+
+`Frame too big` 表示视频宽或高超过当前 OLED 宏。单帧超过 1024 B 本身不是错误，只要它仍然不大于 `OLED_GRAM_SIZE`。
+
+### 为什么显示 Unsupported FS 或 Mount failed？
+
+`Unsupported FS` 通常说明卷不是 FAT12、FAT16 或 FAT32。先备份卡里的数据，再重新格式化。`Mount failed` 更常见于供电、共地、SPI 接线或 CS 引脚问题，具体 FatFs 错误码可以从串口看到。
+
+### 为什么 OLED 在 1.4 MHz 下花屏？
+
+1.4 MHz 超出了不少模块的常规工作条件。缩短 I2C 线、确认上拉和电源，或者直接降低初始速率。自动降速只能在驱动识别到连续故障后生效，无法修复所有信号完整性问题。
+
+### 拔卡后为什么没有立刻回到等待界面？
+
+信息页和列表每 500 ms 检测一次，并要求连续两次失败，因此最慢大约需要 1 秒。播放中的拔卡由文件读取错误触发。重新插卡后，等待界面每 700 ms 尝试一次初始化。
 
 ## 项目结构
 
@@ -244,81 +314,50 @@ OLED_GRAM_SIZE = OLED_PAGES × OLED_WIDTH
 ├── CMakeLists.txt / CMakePresets.json
 ├── SD_card_mp4_mode_player.ioc
 ├── Core/
-│   ├── Src/                 # CubeMX 生成的主程序与外设初始化
+│   ├── Src/                 # CubeMX 主程序与外设初始化
 │   ├── Inc/
-│   ├── Micro_SD/            # SPI SD 驱动与串口诊断
-│   ├── fatfs/              # FatFs 与 diskio 适配
-│   ├── function/           # 统一 app_ui、文件浏览器和 OVID 播放器
-│   ├── OLED/               # SSD1306 绘图、DMA、双缓冲与测试
-│   └── 隐藏关卡/           # 大型取模素材/示例
-├── Drivers/                 # STM32 HAL/CMSIS 第三方代码
-├── cmake/                  # STM32CubeMX CMake 与 Arm GCC 工具链
+│   ├── Micro_SD/            # SPI SD 驱动和串口诊断
+│   ├── fatfs/               # FatFs 与 diskio 适配
+│   ├── function/            # 状态机、UI、播放器和故障诊断
+│   ├── OLED/                # 绘图、DMA、双缓冲与控制器适配
+│   └── 隐藏关卡/            # 历史取模素材，目前含 bad apple.h
+├── Drivers/                 # STM32 HAL 与 CMSIS
+├── cmake/                   # CubeMX CMake 和 Arm GCC 工具链
 └── tools/
-    ├── h2bin.py             # OVID 生成/校验工具
-    └── test_h2bin.py        # 无 Pillow 快速回归测试
+    ├── h2bin.py             # OVID 生成与校验
+    └── test_h2bin.py        # 转换工具回归测试
 ```
+
+`Core/隐藏关卡/` 是仓库中的真实历史目录，工具示例也引用了它，所以这里没有只在文档里把它改成英文。若以后重命名，需要一起更新脚本注释、命令示例和相关路径。
 
 ## 构建占用与验证
 
-以 Arm GNU Toolchain 14.3.1、默认 128×64 和双缓冲配置编译：
+下面的数据来自 Arm GNU Toolchain 14.3.1、默认 128×64 和双缓冲配置：
 
 | 构建 | Flash | RAM |
 |---|---:|---:|
-| Debug (`-Og -g3`) | 50,224 B / 64 KiB（76.64%） | 5,808 B / 20 KiB（28.36%） |
-| Release (`-Os -g0`) | 44,652 B / 64 KiB（68.13%） | 5,808 B / 20 KiB（28.36%） |
+| Debug (`-Og -g3`) | 60,608 B / 64 KiB（92.48%） | 9,920 B / 20 KiB（48.44%） |
+| Release (`-Os -g0`) | 54,020 B / 64 KiB（82.43%） | 9,912 B / 20 KiB（48.40%） |
 
-已完成的自动化验证：
+Debug 的 Flash 看起来已经很接近 64 KiB，主要是因为它保留了完整诊断路径，并使用更适合调试的优化设置。平时运行建议使用 Release；不过 82.43% 也不算非常宽裕，继续增加字库或大段 UI 文案前仍然要看一次 `arm-none-eabi-size`。
 
-- Debug 与 Release 均已编译：128×32、128×64、128×128 和非 2 次幂宽度 96×64。
-- 128×128 最大矩阵配置占用 RAM 7,856 B（38.36%），仍可链接到 STM32F103C8T6 的 20 KiB RAM。
-- `h2bin.py` 回归：单帧 1600 B、`fps=0` 拒绝、奇数视频高度需求报告、零帧头拒绝。
+当前已经完成 128×32、128×64、128×128 和 96×64 的 Debug/Release 编译验证，也覆盖了 SSD1306、SH1106 两条控制器分支。128×128 最大矩阵配置占用 11,968 B RAM（58.44%）。转换工具的回归测试包含大帧、FPS 边界、奇数高度、零帧、v1 兼容和 v2 CRC 损坏检测。
 
-30 分钟连续播放、真实拔卡/重插、不同 OLED 模块在 1.4 MHz 下的信号完整性属于目标板硬件验收项，不能由主机编译测试代替。
+30 分钟连续播放、真实热拔插，以及不同 OLED 模块在 1.4 MHz 下的信号完整性仍然属于目标板测试，主机编译不能替代这些结果。
 
-## 更新日志
+## 最近一次更新
 
-### v1.1.0 完整 UI 与存储信息更新（2026-08-19）
+当前固件版本为 **v1.2.0**。这一版加入 OVID v2、看门狗与 HardFault 记录、长文件名浏览、诊断模式、I2C 自动降速，以及按 16 ms 周期运行的 UI 动画。容量扫描改成平滑追赶真实进度，文件列表也补上了选择框缓动、文件名滚动和元数据轮播。
 
-- 串联等待插卡、初始化/容量扫描、三张卡信息页、文件浏览和播放流程；信息结束后进入列表，不自动播放。
-- 改用 FatFs `f_getfree()` 计算剩余容量，`FF_FS_NOFSINFO=1` 强制扫描 FAT，支持 FAT12/FAT16/FAT32 类型显示。
-- 容量扫描增加实时百分比与活动指示，128×64 使用简洁的 `FREE SPACE / SCANNING FAT` 布局。
-- 修复容量达到 100% 后停留的问题：完成帧移到 FatFs 返回之后，并为后续目录扫描增加独立动画和串口阶段日志。
-- 为 FatFs 目录内层增加 5 秒/8192 项保护，损坏的循环目录链不再永久卡住；调试串口发送同样加入超时保护。
-- 修复目录扫描结束后停在 `Preparing UI` 的 HardFault：避免在 Newlib Nano `printf` 中使用会破坏后续可变参数读取的 `%llu`，容量日志改用 32 位 MiB，文件长度仍保留 64 位严格校验。
-- 区分 SD 物理容量和文件系统卷容量，增加剩余容量、已用比例、寻址方式、块数、实际 SPI 时钟及 CID 信息展示。
-- 三张信息页每页总时长固定为 3 秒，加入滑入、扫光、滑出、页码点、卡片和容量进度条。
-- 增加统一动画弹窗、美化文件列表、空文件动画页、错误页和返回列表提示。
-- 所有小方框动画弹窗统一显示 1200 ms，确保状态和错误信息有足够阅读时间。
-- 信息页及文件列表每 500 ms 探测一次卡状态，连续两次失败统一卸载 FatFs 并回到等待插卡界面。
-- 删除驱动层旧的独立 SD UI，以及自行解析 MBR/VBR/FSInfo 和扫描 FAT32 的容量实现。
-- 新增只读 `SD_Card_IsPresent_Card()` CMD58/OCR 在线检测接口，并从 `main()` 移除提前初始化 SD 的调试调用。
-- 重新完成 128×32、128×64、128×128、96×64 的 Debug/Release 构建矩阵并更新资源占用。
-
-### v1.0.1 宏适配与可靠性更新（2026-08-19）
-
-- 屏幕尺寸和帧容量改为完全由 OLED 宏推导。
-- 支持单帧超过 1024 B，不再额外分配整帧播放缓冲。
-- 通用化软件滚动、菜单布局、测试坐标和显存索引。
-- 增加严格 OVID 校验和 `1–120 FPS` 播放规则。
-- 改为 `/function` 优先、根目录回退，不再自动创建目录。
-- 改进热拔插、FatFs 错误恢复、OLED 双缓冲覆盖时序和 DMA/I2C 超时恢复。
-- 更新转换工具，并首次补充完整的 GitHub README。
-
-### v1.0.0 初始版本
-
-- STM32F103、SPI SD、FatFs 与 SSD1306 OLED 双缓冲。
-- 三按键 `.BIN` 文件浏览与 OVID 循环播放。
-- SD 卡信息、CRC、自检、串口诊断和图片/头文件转换工具。
-- 屏幕和播放器主要按 128×64、1024 B 固定配置实现。
-- 扫描根目录，同时存在未实际使用的 `/function` 创建逻辑。
-- 视频头校验、拔卡恢复和 OLED DMA 超时处理较基础。
+完整的版本记录放在 [CHANGELOG.md](CHANGELOG.md)，README 不再重复贴出每个历史修复。
 
 ## 许可证
 
-项目根目录当前没有为用户业务代码提供统一的根许可证，本 README 不虚构授权条款。STM32 HAL、CMSIS 等第三方代码仍分别遵循其目录中的许可证：
+项目自有代码使用 [MIT License](LICENSE)，版权人为 `riochihao`。
 
-- `Drivers/STM32F1xx_HAL_Driver/LICENSE.txt`
-- `Drivers/CMSIS/LICENSE.txt`
-- `Drivers/CMSIS/Device/ST/STM32F1xx/LICENSE.txt`
+仓库中包含的第三方代码仍遵循各自许可证，主要包括：
 
-如需对外分发整个项目，请先由项目维护者补充适用于自有代码和素材的根许可证。
+- [STM32F1 HAL Driver](Drivers/STM32F1xx_HAL_Driver/LICENSE.txt)
+- [CMSIS](Drivers/CMSIS/LICENSE.txt)
+- [STM32F1 CMSIS Device](Drivers/CMSIS/Device/ST/STM32F1xx/LICENSE.txt)
+- FatFs：许可证说明位于 `Core/fatfs/ff.c`、`ff.h` 和相关源文件头部
