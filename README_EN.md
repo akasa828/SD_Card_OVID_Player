@@ -36,7 +36,7 @@
 > [!TIP]
 > A ready-to-use set of sample `.BIN` files for testing normal playback and error handling is available exclusively from [GitHub Releases](https://github.com/akasa828/SD_Card_OVID_Player/releases/latest).
 
-SD Card OVID Player is an offline frame-video player for the STM32F103C8T6, built on the STM32 HAL. Video files are stored on an SPI Micro SD card and accessed through FatFs. After browsing and validating a file, the firmware sends its frames to an SSD1306 or SH1106 monochrome OLED at the frame rate stored in the file header. Playback only needs three buttons and does not depend on a computer or network connection. OVID can be read as “OLED Video”: a frame-data format designed for monochrome displays.
+SD Card OVID Player is an offline frame-video player for the STM32F103C8T6, built on the STM32 HAL. Video files are stored on an Micro SD card and accessed through FatFs. After browsing and validating a file, the firmware sends its frames to an SSD1306 or SH1106 monochrome OLED at the frame rate stored in the file header. Playback only needs three buttons and does not depend on a computer or network connection. OVID can be read as “OLED Video”: a frame-data format designed for monochrome displays.
 
 The project uses CMake and includes configurations for VS Code, ST's official STM32 extension, and ST-Link. After downloading the complete source tree, you can build, flash, and debug the firmware directly from VS Code.
 

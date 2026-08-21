@@ -36,7 +36,7 @@
 > [!TIP]
 > 可直接用于测试播放和错误处理的示例 `.BIN` 文件已打包，仅在 [GitHub Releases](https://github.com/akasa828/SD_Card_OVID_Player/releases/latest) 中提供下载。
 
-SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频播放器。视频文件存放在 SPI Micro SD 卡中，由 FatFs 负责文件访问，固件完成文件浏览和校验后，再按照文件头中的帧率将画面输出到 SSD1306 或 SH1106 单色 OLED。播放过程只需要三个按键，不依赖电脑或网络。这里使用的 OVID 可以理解为 OLED Video，它是一种给单色屏准备的帧数据格式。
+SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频播放器。视频文件存放在 Micro SD 卡中，由 FatFs 负责文件访问，固件完成文件浏览和校验后，再按照文件头中的帧率将画面输出到 SSD1306 或 SH1106 单色 OLED。播放过程只需要三个按键，不依赖电脑或网络。这里使用的 OVID 可以理解为 OLED Video，它是一种给单色屏准备的帧数据格式。
 
 工程使用 CMake 构建，并提供面向 VS Code、STM32 官方扩展和 ST-Link 的配置；下载完整源码后，可以直接在 VS Code 中构建、刷写和调试。
 
