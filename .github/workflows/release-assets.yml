@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      SAMPLE_ASSET_TAG: v1.2.2
+      SAMPLE_ASSET_NAME: SD_Card_OVID_Player_Sample_Videos.zip
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,7 +32,7 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
 
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi python3 zip
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi
 
       - name: Build release firmware
         run: >-
@@ -41,20 +43,23 @@ jobs:
       - run: cmake --build STM32F103/build/release-assets --parallel
 
       - name: Package release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist/test-files
+          mkdir -p dist
           cp STM32F103/build/release-assets/SD_Card_OVID_Player.elf "dist/SD_Card_OVID_Player_${RELEASE_TAG}.elf"
           cp STM32F103/build/release-assets/SD_Card_OVID_Player.bin "dist/SD_Card_OVID_Player_${RELEASE_TAG}.bin"
-          python3 tools/generate_popup_bins.py dist/test-files
-          (
-            cd dist/test-files
-            zip -9 -j "../OVID_Test_Files_${RELEASE_TAG}.zip" ./*.BIN
-          )
+          gh release download "$SAMPLE_ASSET_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$SAMPLE_ASSET_NAME" \
+            --dir dist
           (
             cd dist
-            sha256sum "SD_Card_OVID_Player_${RELEASE_TAG}.elf" "SD_Card_OVID_Player_${RELEASE_TAG}.bin" "OVID_Test_Files_${RELEASE_TAG}.zip" > SHA256SUMS.txt
+            sha256sum "SD_Card_OVID_Player_${RELEASE_TAG}.elf" \
+              "SD_Card_OVID_Player_${RELEASE_TAG}.bin" \
+              "$SAMPLE_ASSET_NAME" > SHA256SUMS.txt
           )
 
       - name: Attach assets to the published release
@@ -65,6 +70,6 @@ jobs:
           gh release upload "$RELEASE_TAG" \
             "dist/SD_Card_OVID_Player_${RELEASE_TAG}.elf" \
             "dist/SD_Card_OVID_Player_${RELEASE_TAG}.bin" \
-            "dist/OVID_Test_Files_${RELEASE_TAG}.zip" \
+            "dist/$SAMPLE_ASSET_NAME" \
             dist/SHA256SUMS.txt \
             --clobber
