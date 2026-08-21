@@ -29,37 +29,23 @@ OVID v2 每帧数据后再附加 4 字节小端 CRC32；固件发现坏帧时保
 
 import argparse
 import re
-import struct
 import sys
 import zlib
 from pathlib import Path
 
-MAGIC = b"OVID"
-HEADER_SIZE = 16
-OVID_V1 = 0
-OVID_V2 = 2
-OVID_FLAG_CRC32 = 0x01
+import struct
 
-
-def crc16_ccitt(data: bytes) -> int:
-    crc = 0xFFFF
-    for value in data:
-        crc ^= value << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
-    return crc
-
-
-def make_header(width: int, height: int, count: int, fps: int, version: int) -> bytes:
-    flags = OVID_FLAG_CRC32 if version == OVID_V2 else 0
-    first14 = struct.pack("<4sBBBBIH", MAGIC, width, height, version, flags, count, fps)
-    header_crc = crc16_ccitt(first14) if version == OVID_V2 else 0
-    return first14 + struct.pack("<H", header_crc)
-
-
-def frame_bytes(width: int, height: int) -> int:
-    """一帧的字节数：页主序下 = ceil(height/8) * width。"""
-    return ((height + 7) // 8) * width
+from ovid_codec import (
+    HEADER_SIZE,
+    MAGIC,
+    OVID_FLAG_CRC32,
+    OVID_V1,
+    OVID_V2,
+    crc16_ccitt,
+    frame_bytes,
+    make_header,
+    write_ovid as _write_ovid,
+)
 
 
 def vertical_scan_to_pagemajor(data: bytes, width: int, height: int) -> bytes:
@@ -102,37 +88,14 @@ def write_ovid(out_path: Path, frames, width: int, height: int, fps: int,
     先占位写头部，流式写完帧后回填 frame_count —— 这样无需把整个视频读进内存，
     10000+ 帧的素材也只占一帧的内存。
     """
-    if not (1 <= width <= 255 and 1 <= height <= 255):
-        raise ValueError("宽高须在 1~255（OVID v1 字段各占 1 字节）")
-    if not 1 <= fps <= 120:
-        raise ValueError("fps 须在 1~120")
-    if version not in (OVID_V1, OVID_V2):
-        raise ValueError("OVID 版本只能是 v1 或 v2")
-    expect = frame_bytes(width, height)
-    count = 0
-    with out_path.open("wb") as f:
-        f.write(make_header(width, height, 0, fps, version))
-        for data in frames:
-            if len(data) != expect:
-                raise ValueError(
-                    f"第 {count + 1} 帧长度 {len(data)} 字节，与 {width}x{height} "
-                    f"应有的 {expect} 字节不符"
-                )
-            f.write(data)
-            if version == OVID_V2:
-                f.write(struct.pack("<I", zlib.crc32(data) & 0xFFFFFFFF))
-            count += 1
-        if count == 0:
-            raise ValueError("没有取到任何帧")
-        f.seek(0)
-        f.write(make_header(width, height, count, fps, version))
-
-    size = HEADER_SIZE + count * (expect + (4 if version == OVID_V2 else 0))
+    summary = _write_ovid(out_path, frames, width, height, fps, version)
     print(f"已写出 {out_path}")
-    print(f"  OVID v{2 if version == OVID_V2 else 1}  {width}x{height}  {count} 帧  "
-          f"{fps} fps  每帧 {expect} B  合计 {size / 1024 / 1024:.2f} MB")
+    print(f"  OVID v{2 if version == OVID_V2 else 1}  {width}x{height}  "
+          f"{summary.frame_count} 帧  "
+          f"{fps} fps  每帧 {summary.frame_bytes} B  "
+          f"合计 {summary.file_bytes / 1024 / 1024:.2f} MB")
     print_firmware_requirements(width, height)
-    print(f"  时长约 {count / fps:.1f} 秒")
+    print(f"  时长约 {summary.frame_count / fps:.1f} 秒")
 
 
 # ---------------------------------------------------------------- 头文件输入
