@@ -1,0 +1,46 @@
+OVID Converter third-party notices
+==================================
+
+The packaged application includes the following open-source components:
+
+Flet and Flet Desktop 0.86.5
+  Copyright the Flet contributors
+  License: Apache License 2.0
+  Source: https://github.com/flet-dev/flet
+
+Flutter desktop runtime
+  Copyright 2014 The Flutter Authors
+  License: BSD 3-Clause and additional component licenses
+  Source: https://github.com/flutter/flutter
+  The packaged Flutter runtime also carries its generated NOTICES file.
+
+Pillow 12.3.0
+  Copyright 1995-2011 Fredrik Lundh and contributors
+  Copyright 2010-2026 Jeffrey A. Clark and contributors
+  License: MIT-CMU and bundled component licenses
+  Source: https://github.com/python-pillow/Pillow
+
+imageio-ffmpeg 0.6.0
+  Copyright 2019-2025 imageio contributors
+  License: BSD 2-Clause
+  Source: https://github.com/imageio/imageio-ffmpeg
+
+FFmpeg
+  Copyright the FFmpeg developers
+  Bundled build: imageio-ffmpeg Windows x64 FFmpeg 7.1 essentials build
+  License: GNU General Public License version 3 or later. The exact build uses
+  --enable-gpl and --enable-version3; its configuration and license notice are
+  included as licenses/FFmpeg-LICENSE.txt.
+  Source and license information: https://ffmpeg.org/legal.html
+
+Inno Setup Simplified Chinese Translation
+  Copyright Zhenghan Yang and contributors
+  License: MIT
+  Source: https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation
+  Used only while compiling the Windows installer. Its license text is stored
+  next to the installer source as ChineseSimplified-LICENSE.txt.
+
+Python and the remaining transitive packages retain their respective licenses.
+Exact package license files and the Flutter-generated notices are copied into
+the release directory during packaging. This notice does not replace those
+license texts.
