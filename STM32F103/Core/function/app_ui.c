@@ -4,6 +4,7 @@
 #include "main.h"
 #include "oled.hpp"
 #include "app_ui.h"
+#include "app_version.h"
 #include "system_diag.h"
 
 #define UI_FONT_SMALL "0806"
@@ -700,7 +701,7 @@ void AppUI_RenderDiagnostics(uint8_t page, uint8_t key_mask, int16_t sd_test_res
     char line[40];
     ui_page_header("Diagnostics", (uint8_t)(page % APP_UI_INFO_PAGES), 0);
     if (page == 0U) {
-        ui_text(2, 13, "FW V1.2.1", UI_FONT_SMALL);
+        ui_text(2, 13, APP_VERSION_DISPLAY, UI_FONT_SMALL);
         (void)snprintf(line, sizeof(line), "Reset:%s State:%u",
                        SystemDiag_WasWatchdogReset() ? "IWDG" : "Normal",
                        (unsigned int)SystemDiag_GetState());
