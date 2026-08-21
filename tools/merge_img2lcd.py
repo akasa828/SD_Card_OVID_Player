@@ -14,7 +14,12 @@ DECL_RE = re.compile(
     r"(?:\bstatic\s+)?(?:\bconst\s+)?"
     r"(?:unsigned\s+char|uint8_t)\s+"
     r"(?:(?:const|code|PROGMEM)\s+)*"
-    r"(?P<name>[A-Za-z_]\w*)\s*\[[^\]]*\]\s*"
+    # Some Img2Lcd versions copy the source filename verbatim into the array
+    # name.  Names such as ``gImage_frame-001.jpg`` are invalid C identifiers,
+    # but the byte initializer is still usable, so accept any single-line name
+    # up to the array brackets.  The generated header uses clean BMPxxxxxx
+    # identifiers and never carries this original name forward.
+    r"(?P<name>[^\[\]{};=\r\n]+?)\s*\[[^\]]*\]\s*"
     r"(?:(?:code|PROGMEM)\s*)*=\s*\{",
     re.MULTILINE,
 )
