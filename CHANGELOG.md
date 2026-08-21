@@ -24,6 +24,7 @@
 - 新增独立项目 `STM32-HAL-SPI-SD-FatFs`，包含 SD 协议核心、可绑定 FatFs `diskio`、STM32 HAL 适配层与文件读写示例。
 - 播放器继续保留两个驱动的版本化源码副本，并新增来源记录与同步脚本，下载 ZIP 后无需联网获取驱动。
 - 三个项目新增 GitHub Actions 编译检查；驱动项目从 `v1.0.0` 开始发布。
+- 播放器 Debug 构建保留 `-g3` 调试符号并改用 `-Os`，避免 GNU Arm 13/14 代码尺寸差异导致 64 KiB Flash 溢出。
 
 ### Documentation
 

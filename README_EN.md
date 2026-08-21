@@ -398,13 +398,13 @@ The values below were measured with Arm GNU Toolchain 14.3.1, the default 128×6
 
 | Build | Flash | RAM |
 |---|---:|---:|
-| Debug (`-Og -g3`) | 62,724 B / 64 KiB (95.71%) | 10,048 B / 20 KiB (49.06%) |
+| Debug (`-Os -g3`) | 55,812 B / 64 KiB (85.16%) | 10,040 B / 20 KiB (49.02%) |
 | Release (`-Os -g0`) | 55,800 B / 64 KiB (85.14%) | 10,040 B / 20 KiB (49.02%) |
 
 > [!NOTE]
-> Debug Flash usage is close to 64 KiB mainly because it retains the complete diagnostic paths and uses optimization settings suited to debugging. Release is recommended for normal operation. Even so, 85.14% is not a huge amount of spare capacity, so check `arm-none-eabi-size` before adding another font or a large block of UI text.
+> Debug still keeps the complete diagnostic paths and `-g3` symbols, but it also uses `-Os` so the image fits when built by different GNU Arm toolchain versions. A few variables may therefore be optimized during stepping. Release remains the recommended normal-use build. With Flash usage around 85%, check `arm-none-eabi-size` before adding another font or a large block of UI text.
 
-The 128×32, 128×64, 128×128, and 96×64 configurations have been rebuilt, including both SSD1306 and SH1106 controller branches. The largest 128×128 Debug configuration uses 12,096 B of RAM (59.06%). Tool checks cover Python syntax and regeneration of the OVID test files.
+The 128×32, 128×64, 128×128, and 96×64 configurations have been rebuilt, including both SSD1306 and SH1106 controller branches. The largest 128×128 Debug configuration uses 12,088 B of RAM (59.02%). Tool checks cover Python syntax and regeneration of the OVID test files.
 
 A 30-minute continuous playback run, real card hot removal, and signal integrity at 1.4 MHz across different OLED modules remain target-hardware tests. A successful host build cannot replace those checks.
 
