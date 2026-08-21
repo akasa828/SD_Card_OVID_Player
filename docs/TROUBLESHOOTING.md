@@ -1,5 +1,9 @@
 <a id="top"></a>
 
+<p align="center">
+  <strong>中文</strong> · <a href="TROUBLESHOOTING_EN.md">English</a>
+</p>
+
 # 诊断与常见问题
 
 [← 返回项目 README](../README.md)

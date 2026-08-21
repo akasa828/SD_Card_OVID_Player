@@ -1,5 +1,9 @@
 <a id="top"></a>
 
+<p align="center">
+  <strong>中文</strong> · <a href="OVID_TUTORIAL_EN.md">English</a>
+</p>
+
 # 🎬 生成 OVID 文件
 
 [← 返回项目 README](../README.md)
