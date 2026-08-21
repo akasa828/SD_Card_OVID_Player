@@ -1,18 +1,12 @@
 name: Feature request / 功能建议
-description: Suggest a focused improvement to firmware, tools, or documentation
+description: Share an idea for the project / 提交你对项目的想法
 title: "[Feature]: "
 body:
   - type: textarea
-    id: problem
+    id: suggestion
     attributes:
-      label: Problem or use case / 问题或使用场景
-      description: Describe the need before describing the solution.
-    validations:
-      required: true
-  - type: textarea
-    id: proposal
-    attributes:
-      label: Proposed behavior / 建议行为
+      label: Suggestion / 功能建议
+      description: Write your idea here. / 请直接写下你的想法。
     validations:
       required: true
   - type: dropdown
@@ -28,7 +22,3 @@ body:
         - Documentation / 文档
     validations:
       required: true
-  - type: textarea
-    id: constraints
-    attributes:
-      label: Hardware constraints and alternatives / 硬件限制与替代方案
