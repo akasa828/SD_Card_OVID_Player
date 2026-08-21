@@ -53,6 +53,10 @@ SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频�
   </thead>
   <tbody>
     <tr>
+      <td><a href="#showcase">UI 展示</a> · <a href="#roadmap">未来计划</a></td>
+      <td><a href="#features">主要特性</a> · <a href="#motivation">项目初衷</a></td>
+    </tr>
+    <tr>
       <td><a href="#quick-start">快速开始</a> · <a href="#hardware">硬件接线</a> · <a href="#flash">烧录固件</a></td>
       <td><a href="docs/OVID_FORMAT.md">OVID 格式</a> · <a href="docs/PORTING.md">屏幕适配</a></td>
     </tr>
@@ -67,6 +71,75 @@ SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频�
   </tbody>
 </table>
 
+
+<a id="showcase"></a>
+
+## 🖼️ UI 展示
+
+<p align="center">
+  <img src="docs/images/mmexport1787248540213%20(1).gif" alt="SD Card OVID Player 实机运行演示" width="640"><br>
+  <sub>实机运行与 OLED 播放效果</sub>
+</p>
+<p align="center">
+  <img src="docs/images/MP4_20260821_021752VLOG.gif" alt="SD Card OVID Player 等待插卡与启动界面" width="640"><br>
+  <sub>等待插卡与启动 UI</sub>
+</p>
+
+<a id="roadmap"></a>
+
+## 🗺️ 未来计划
+
+- [ ] 受限于 STM32F103C8T6 当前的 Flash 和 RAM 容量，计划将播放器移植到 ESP32，并在资源更充足的平台上继续扩展功能。
+- [ ] 将 SPI Micro SD + FatFs 文件系统驱动和 SSD1306/SH1106 OLED 驱动分别整理成可独立使用、方便移植的模块。
+
+<a id="features"></a>
+
+## ✨ 特性
+
+- **💾 完整的 SD 启动流程：** 等待插卡、挂载、计算卷容量、扫描视频文件，再依次显示存储、卡片和身份信息。文件优先从 `/function` 读取，没有匹配文件时回退到根目录读取。
+- **🛡️ OVID v2 完整性校验：** 使用文件头 CRC16 和逐帧 CRC32。坏帧不会刷到 OLED，而是保留上一帧继续读取。
+- **⏱️ 稳定播放时序：** 支持 1–120 FPS，并累计毫秒除法余数，长时间播放不会因整数截断逐渐变慢。
+- **🖥️ 流畅的 OLED UI：** 使用双缓冲和 I2C DMA。128×64、1.4 MHz I2C 的正常环境下，动画按 16 ms 周期刷新。
+- **📂 更易用的文件浏览器：** 支持长按加速、选中位置记忆、长文件名往返滚动，以及分辨率、帧率、帧数和格式版本轮播。
+- **🔄 自动拔卡恢复：** 信息页和文件列表每 500 ms 探测一次卡状态；连续两次失败后卸载 FatFs 并返回等待插卡界面，播放读错误走同一套恢复流程。
+- **💾 高效的 SD 卡驱动：** 依据 SD 卡规范实现 SPI 模式读写，并通过 `diskio` 接口接入 FatFs 文件系统。
+
+> [!NOTE]
+> 遇到 SD 超时或 I2C/DMA 故障恢复时，动画流畅度会暂时让位给可靠性。
+
+
+### 🧩 可以单独参考的部分
+
+如果你不需要完整播放器，也可以直接参考仓库中的这些模块：
+
+| 内容 | 位置 |
+|---|---|
+| SSD1306/SH1106 OLED 绘图、双缓冲与 I2C DMA 驱动 | `STM32F103/Core/OLED/` |
+| SPI Micro SD 驱动与 FatFs `diskio` 对接 | `STM32F103/Core/Micro_SD/`、`STM32F103/Core/fatfs/` |
+| Img2Lcd 帧合并与 OVID 打包、校验工具 | `tools/` |
+| VS Code、CMake 与 ST-Link 构建调试配置 | `SD_Card_OVID_Player.code-workspace`、`STM32F103/.vscode/`、`STM32F103/CMakePresets.json` |
+
+这些代码可以作为移植参考，但换用其他 STM32 型号或引脚时，仍需调整 HAL 外设句柄、GPIO 和时钟配置。
+
+---
+
+<a id="quick-start"></a>
+
+## 🚀 快速开始
+
+本项目在`Vscode`环境下开发，配合 [STM32CubeIDE for Visual Studio Code 扩展包](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32-vscode-extension)完成。
+
+1. **下载源码 ZIP。** 打开项目的 [GitHub 仓库](https://github.com/akasa828/SD_Card_OVID_Player)，点击 **Code → Download ZIP**，下载完整项目。
+2. **解压项目。** 把 ZIP 完整解压到普通文件夹中，不要直接在压缩包预览界面里打开或编译。
+3. **用 VS Code 打开工作区。** 在解压后的仓库根目录中打开 `SD_Card_OVID_Player.code-workspace`，左侧会同时显示 `STM32F103` 和 `ESP32`。如果只使用当前固件，也可以通过 **File → Open Folder**（文件 → 打开文件夹）直接打开包含 `CMakeLists.txt` 的 `STM32F103/` 目录。
+4. **安装扩展。** 安装上述 [STM32 扩展包](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32-vscode-extension)。首次打开时，接受项目发现、工具 bundle 下载和 CMake 配置提示，直到右下角不再提示下载 `Bundle` 包。
+5. **选择构建类型。** 在 STM32/CMake 项目面板中选择 `Debug` 或 `Release`。调试建议选 Debug，正常烧录建议选 Release。
+6. **连接并刷写。** 按[接线表](#wiring)连接 OLED、Micro SD、三个按键和 ST-Link，然后按 `F5`，选择 `STM32: Build, flash and debug with ST-Link`。扩展会自动构建并下载当前 preset 的 ELF；程序停在 `main` 时再按一次 `F5` 即可继续运行。
+7. **准备 OVID 文件。** 把 SD 卡格式化为 FAT 或 FAT32，在根目录创建 `function` 文件夹。按照[生成 OVID 文件](#create-ovid)中的流程准备素材、用 Img2Lcd 取模，再通过仓库里的合并脚本和 `h2bin.py` 生成 `.BIN`。
+8. **插卡并播放。** 将 `DEMO.BIN` 放入 `/function`，插卡并复位。三张卡信息页结束后，用上下键选择文件，按确认键播放；播放中再次按确认键返回列表。
+
+> [!NOTE]
+> 首次配置需要联网下载项目声明的 STM32 工具 bundles。目前 GitHub Releases 只发布 `v1.2.2`；用于测试播放和错误处理的示例 `.BIN` 文件请从 [最新 Release](https://github.com/akasa828/SD_Card_OVID_Player/releases/latest) 下载。
 
 <a id="motivation"></a>
 
@@ -119,65 +192,6 @@ OLED 不再只是简单地显示几个字符，而是逐渐加入了画点、画
 至于最开始那个“在 STM32 上播放 Bad Apple”的想法……
 
 大概只是没想到，最后为了播它，要折腾这么多东西（笑）。
-
-## 🖼️ UI 展示
-
-<p align="center">
-  <img src="docs/images/mmexport1787248540213%20(1).gif" alt="SD Card OVID Player 实机运行演示" width="640"><br>
-  <sub>实机运行与 OLED 播放效果</sub>
-</p>
-<p align="center">
-  <img src="docs/images/MP4_20260821_021752VLOG.gif" alt="SD Card OVID Player 等待插卡与启动界面" width="640"><br>
-  <sub>等待插卡与启动 UI</sub>
-</p>
-
-<a id="features"></a>
-
-## ✨ 特性
-
-- **💾 完整的 SD 启动流程：** 等待插卡、挂载、计算卷容量、扫描视频文件，再依次显示存储、卡片和身份信息。文件优先从 `/function` 读取，没有匹配文件时回退到根目录读取。
-- **🛡️ OVID v2 完整性校验：** 使用文件头 CRC16 和逐帧 CRC32。坏帧不会刷到 OLED，而是保留上一帧继续读取。
-- **⏱️ 稳定播放时序：** 支持 1–120 FPS，并累计毫秒除法余数，长时间播放不会因整数截断逐渐变慢。
-- **🖥️ 流畅的 OLED UI：** 使用双缓冲和 I2C DMA。128×64、1.4 MHz I2C 的正常环境下，动画按 16 ms 周期刷新。
-- **📂 更易用的文件浏览器：** 支持长按加速、选中位置记忆、长文件名往返滚动，以及分辨率、帧率、帧数和格式版本轮播。
-- **🔄 自动拔卡恢复：** 信息页和文件列表每 500 ms 探测一次卡状态；连续两次失败后卸载 FatFs 并返回等待插卡界面，播放读错误走同一套恢复流程。
-- **💾 高效的 SD 卡驱动：** 依据 SD 卡规范实现 SPI 模式读写，并通过 `diskio` 接口接入 FatFs 文件系统。
-
-> [!NOTE]
-> 遇到 SD 超时或 I2C/DMA 故障恢复时，动画流畅度会暂时让位给可靠性。
-
-### 🧩 可以单独参考的部分
-
-如果你不需要完整播放器，也可以直接参考仓库中的这些模块：
-
-| 内容 | 位置 |
-|---|---|
-| SSD1306/SH1106 OLED 绘图、双缓冲与 I2C DMA 驱动 | `STM32F103/Core/OLED/` |
-| SPI Micro SD 驱动与 FatFs `diskio` 对接 | `STM32F103/Core/Micro_SD/`、`STM32F103/Core/fatfs/` |
-| Img2Lcd 帧合并与 OVID 打包、校验工具 | `tools/` |
-| VS Code、CMake 与 ST-Link 构建调试配置 | `SD_Card_OVID_Player.code-workspace`、`STM32F103/.vscode/`、`STM32F103/CMakePresets.json` |
-
-这些代码可以作为移植参考，但换用其他 STM32 型号或引脚时，仍需调整 HAL 外设句柄、GPIO 和时钟配置。
-
----
-
-<a id="quick-start"></a>
-
-## 🚀 快速开始
-
-本项目在`Vscode`环境下开发，配合 [STM32CubeIDE for Visual Studio Code 扩展包](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32-vscode-extension)完成。
-
-1. **下载源码 ZIP。** 打开项目的 [GitHub 仓库](https://github.com/akasa828/SD_Card_OVID_Player)，点击 **Code → Download ZIP**，下载完整项目。
-2. **解压项目。** 把 ZIP 完整解压到普通文件夹中，不要直接在压缩包预览界面里打开或编译。
-3. **用 VS Code 打开工作区。** 在解压后的仓库根目录中打开 `SD_Card_OVID_Player.code-workspace`，左侧会同时显示 `STM32F103` 和 `ESP32`。如果只使用当前固件，也可以通过 **File → Open Folder**（文件 → 打开文件夹）直接打开包含 `CMakeLists.txt` 的 `STM32F103/` 目录。
-4. **安装扩展。** 安装上述 [STM32 扩展包](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32-vscode-extension)。首次打开时，接受项目发现、工具 bundle 下载和 CMake 配置提示，直到右下角不再提示下载 `Bundle` 包。
-5. **选择构建类型。** 在 STM32/CMake 项目面板中选择 `Debug` 或 `Release`。调试建议选 Debug，正常烧录建议选 Release。
-6. **连接并刷写。** 按[接线表](#wiring)连接 OLED、Micro SD、三个按键和 ST-Link，然后按 `F5`，选择 `STM32: Build, flash and debug with ST-Link`。扩展会自动构建并下载当前 preset 的 ELF；程序停在 `main` 时再按一次 `F5` 即可继续运行。
-7. **准备 OVID 文件。** 把 SD 卡格式化为 FAT 或 FAT32，在根目录创建 `function` 文件夹。按照[生成 OVID 文件](#create-ovid)中的流程准备素材、用 Img2Lcd 取模，再通过仓库里的合并脚本和 `h2bin.py` 生成 `.BIN`。
-8. **插卡并播放。** 将 `DEMO.BIN` 放入 `/function`，插卡并复位。三张卡信息页结束后，用上下键选择文件，按确认键播放；播放中再次按确认键返回列表。
-
-> [!NOTE]
-> 首次配置需要联网下载项目声明的 STM32 工具 bundles。目前 GitHub Releases 只发布 `v1.2.2`；用于测试播放和错误处理的示例 `.BIN` 文件请从 [最新 Release](https://github.com/akasa828/SD_Card_OVID_Player/releases/latest) 下载。
 
 <a id="hardware"></a>
 
@@ -368,9 +382,7 @@ SD 卡根目录/
 ├── docs/images/             # 预留的实机图片与 UI 动图位置
 ├── tools/
 │   ├── h2bin.py             # OVID 生成与校验
-│   ├── merge_img2lcd.py     # 合并 Img2Lcd 单帧 C 数组
-│   ├── test_h2bin.py        # OVID 工具回归测试
-│   └── test_merge_img2lcd.py
+│   └── merge_img2lcd.py     # 合并 Img2Lcd 单帧 C 数组
 └── SD_Card_OVID_Player.code-workspace
 ```
 
