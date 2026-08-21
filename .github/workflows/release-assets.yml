@@ -1,0 +1,63 @@
+name: release-assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub Release tag
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi python3 zip
+
+      - name: Build release firmware
+        run: >-
+          cmake -S STM32F103 -B STM32F103/build/release-assets -G Ninja
+          -DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake
+          -DCMAKE_BUILD_TYPE=Release
+
+      - run: cmake --build STM32F103/build/release-assets --parallel
+
+      - name: Package release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/test-files
+          cp STM32F103/build/release-assets/SD_Card_OVID_Player.elf "dist/SD_Card_OVID_Player_${RELEASE_TAG}.elf"
+          cp STM32F103/build/release-assets/SD_Card_OVID_Player.bin "dist/SD_Card_OVID_Player_${RELEASE_TAG}.bin"
+          python3 tools/generate_popup_bins.py dist/test-files
+          (
+            cd dist/test-files
+            zip -9 -j "../OVID_Test_Files_${RELEASE_TAG}.zip" ./*.BIN
+          )
+          (
+            cd dist
+            sha256sum "SD_Card_OVID_Player_${RELEASE_TAG}.elf" "SD_Card_OVID_Player_${RELEASE_TAG}.bin" "OVID_Test_Files_${RELEASE_TAG}.zip" > SHA256SUMS.txt
+          )
+
+      - name: Attach assets to the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber
