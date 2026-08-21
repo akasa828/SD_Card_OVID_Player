@@ -525,8 +525,22 @@ static int16_t ui_selected_name_offset(const char *name, int16_t available_width
     return 0;
 }
 
+static void ui_draw_inverse_status(uint8_t enabled)
+{
+    const char *label = (OLED_WIDTH >= 112U) ?
+                        (enabled ? "Inv on" : "Inv off") :
+                        (enabled ? "I1" : "I0");
+    int16_t width = (int16_t)ui_text_width(label, UI_FONT_SMALL);
+    int16_t x = (int16_t)OLED_WIDTH - width - 2;
+    if (x < 0) x = 0;
+    ui_text(x, 1, label, UI_FONT_SMALL);
+    if (enabled)
+        OLED_SW_Invert_Rect(x > 0 ? x - 1 : 0, 0,
+                            width + (x > 0 ? 2 : 1), 9);
+}
+
 void AppUI_RenderFileList(const char names[][APP_UI_FILE_NAME_MAX], uint8_t count, uint8_t selected,
-                          uint8_t top, uint8_t function_dir, const AppUI_VideoMeta *meta,
+                          uint8_t top, uint8_t inverse_enabled, const AppUI_VideoMeta *meta,
                           uint32_t elapsed_ms)
 {
     if (ui_tiny_screen()) { ui_render_tiny(elapsed_ms); return; }
@@ -539,7 +553,7 @@ void AppUI_RenderFileList(const char names[][APP_UI_FILE_NAME_MAX], uint8_t coun
         char title[18];
         (void)snprintf(title, sizeof(title), "Files %u", count);
         ui_text(2, 1, title, UI_FONT_SMALL);
-        ui_text(OLED_WIDTH > 32U ? OLED_WIDTH - 30 : 0, 1, function_dir ? "/FN" : "/", UI_FONT_SMALL);
+        ui_draw_inverse_status(inverse_enabled);
         OLED_Draw_Line(0, 9, OLED_WIDTH - 1, 0, 0);
     }
     int16_t name_left = 8;
@@ -652,7 +666,7 @@ void AppUI_RenderDiagnostics(uint8_t page, uint8_t key_mask, int16_t sd_test_res
     char line[40];
     ui_page_header("Diagnostics", (uint8_t)(page % APP_UI_INFO_PAGES), 0);
     if (page == 0U) {
-        ui_text(2, 13, "FW V1.2.0", UI_FONT_SMALL);
+        ui_text(2, 13, "FW V1.2.1", UI_FONT_SMALL);
         (void)snprintf(line, sizeof(line), "Reset:%s State:%u",
                        SystemDiag_WasWatchdogReset() ? "IWDG" : "Normal",
                        (unsigned int)SystemDiag_GetState());
@@ -714,17 +728,27 @@ void AppUI_RenderDiagnostics(uint8_t page, uint8_t key_mask, int16_t sd_test_res
 static void ui_draw_popup_overlay(uint32_t elapsed, uint32_t duration)
 {
     if (ui_tiny_screen()) return;
+    if (!s_popup.classic) {
+        const uint32_t reveal_ms = 300U;
+        uint8_t compact = OLED_HEIGHT < 48U;
+        OLED_GRAM_Clear();
+        ui_text_center(0, compact ? 5 : 13, s_popup.title,
+                       compact ? UI_FONT_SMALL : UI_FONT_MED);
+        if (s_popup.detail[0])
+            ui_text_center(0, compact ? 17 : 32, s_popup.detail, UI_FONT_SMALL);
+        ui_invert_reveal(elapsed < reveal_ms ? elapsed : reveal_ms, reveal_ms);
+        return;
+    }
+
     int16_t target_w = (OLED_WIDTH > 10U) ? OLED_WIDTH - 10 : OLED_WIDTH;
     int16_t target_h = (OLED_HEIGHT >= 48U) ? 38 : OLED_HEIGHT - 4;
-    uint32_t edge = s_popup.classic ? 180U : 300U;
+    uint32_t edge = 180U;
     uint32_t scale = 100U;
 
-    if (s_popup.classic) {
-        if (elapsed < edge) scale = elapsed * 100U / edge;
-        else if (duration > edge && elapsed > duration - edge)
-            scale = (duration - elapsed) * 100U / edge;
-        if (scale > 100U) scale = 100U;
-    }
+    if (elapsed < edge) scale = elapsed * 100U / edge;
+    else if (duration > edge && elapsed > duration - edge)
+        scale = (duration - elapsed) * 100U / edge;
+    if (scale > 100U) scale = 100U;
 
     int16_t w = (int16_t)((uint32_t)target_w * scale / 100U);
     int16_t h = (int16_t)((uint32_t)target_h * scale / 100U);
@@ -733,14 +757,12 @@ static void ui_draw_popup_overlay(uint32_t elapsed, uint32_t duration)
     int16_t y = (OLED_HEIGHT - h) / 2;
     OLED_Clear_Rect(x, y, w, h);
     ui_panel(x, y, w, h);
-    if (!s_popup.classic || scale >= 72U) {
+    if (scale >= 72U) {
         ui_text_center(0, y + 5, s_popup.title,
                        (OLED_HEIGHT >= 48U) ? UI_FONT_MED : UI_FONT_SMALL);
         if (s_popup.detail[0] && h >= 27)
             ui_text_center(0, y + h - 12, s_popup.detail, UI_FONT_SMALL);
     }
-    if (!s_popup.classic)
-        ui_invert_reveal(elapsed < edge ? elapsed : edge, edge);
 }
 
 static void ui_start_popup(const char *title, const char *detail,

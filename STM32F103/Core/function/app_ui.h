@@ -41,7 +41,7 @@ void AppUI_RenderInfoPage(uint8_t page, const SD_CardInfo *card,
                           const AppUI_VolumeInfo *volume, uint32_t spi_hz,
                           uint32_t elapsed_ms);
 void AppUI_RenderFileList(const char names[][APP_UI_FILE_NAME_MAX], uint8_t count, uint8_t selected,
-                          uint8_t top, uint8_t function_dir, const AppUI_VideoMeta *meta,
+                          uint8_t top, uint8_t inverse_enabled, const AppUI_VideoMeta *meta,
                           uint32_t elapsed_ms);
 void AppUI_RenderEmpty(uint8_t function_dir, uint32_t elapsed_ms);
 void AppUI_RenderPersistentError(const char *title, const char *detail, uint32_t elapsed_ms);
