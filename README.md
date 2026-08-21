@@ -98,7 +98,7 @@ SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频�
 
 - [ ] 受限于 STM32F103C8T6 当前的 Flash 和 RAM 容量，计划将播放器移植到 ESP32，并在资源更充足的平台上继续扩展功能。
 - [x] 将 SPI Micro SD + FatFs 文件系统驱动和 SSD1306/SH1106 OLED 驱动分别整理成可独立使用、方便移植的模块。
-- [x] 简化从图片、GIF 或视频素材生成 OVID `.BIN` 文件的转换流程，新增可直接处理素材的 OVID Converter。
+- [ ] **正在进行中：** 简化从图片、GIF 或视频素材生成 OVID `.BIN` 文件的转换流程。当前已提供 OVID Converter，预览、转换体验和 Windows 打包仍在继续完善。
 
 <a id="features"></a>
 
@@ -147,7 +147,7 @@ SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频�
 8. **插卡并播放。** 将 `DEMO.BIN` 放入 `/function`，插卡并复位。三张卡信息页结束后，用上下键选择文件，按确认键播放；播放中再次按确认键返回列表。
 
 > [!NOTE]
-> 首次配置需要联网下载项目声明的 STM32 工具 bundles。`v1.2.2` 仍是当前稳定固件，`v1.2.6` 是驱动模块化预发布版，`v1.3.0-beta.1` 是包含新转换器的最新测试版；用于测试播放和错误处理的示例 `.BIN` 文件可在 Releases 中下载。
+> 首次配置需要联网下载项目声明的 STM32 工具 bundles。`v1.2.2` 仍是当前稳定固件，`v1.2.6` 是驱动模块化预发布版，`v1.3.0-beta.1` 是包含新转换器的当前 Latest Release；它仍带有 beta 标识，转换流程会继续完善。用于测试播放和错误处理的示例 `.BIN` 文件可在 Releases 中下载。
 
 <a id="motivation"></a>
 
@@ -451,7 +451,7 @@ SD 卡根目录/
 
 ## 📝 最近一次更新
 
-当前稳定固件版本为 **v1.2.2**；**v1.2.6** 是驱动模块化预发布版；[**v1.3.0-beta.1**](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) 是包含 Material 3 桌面转换器的最新测试版。GitHub 的 `/releases/latest` 仍然指向稳定版本。
+当前稳定固件版本为 **v1.2.2**；**v1.2.6** 是驱动模块化预发布版；[**v1.3.0-beta.1**](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) 是包含 Material 3 桌面转换器的当前 Latest Release。它仍是测试版本，GitHub 的 `/releases/latest` 将指向这一版本。
 
 完整的版本记录放在 [CHANGELOG.md](CHANGELOG.md)
 

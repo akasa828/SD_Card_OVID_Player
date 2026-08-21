@@ -97,7 +97,7 @@ The repository is organized by target platform: `STM32F103/` contains the comple
 
 - [ ] Because the STM32F103C8T6 is currently limited by its available Flash and RAM, port the player to ESP32 and continue developing it on a platform with more resources.
 - [x] Separate the SPI Micro SD + FatFs filesystem driver and the SSD1306/SH1106 OLED driver into independent, reusable, and easier-to-port modules.
-- [x] Simplify conversion from images, GIFs, and videos with the direct-media OVID Converter.
+- [ ] **In progress:** Simplify conversion from images, GIFs, and videos. OVID Converter is now available, while its preview, conversion workflow, and Windows packaging are still being refined.
 
 <a id="features"></a>
 
@@ -145,7 +145,7 @@ This project is developed in VS Code with the [STM32CubeIDE for Visual Studio Co
 8. **Insert the card and play.** Copy `DEMO.BIN` into `/function`, insert the card, and reset the board. After the three card-information pages finish, use Up and Down to select a file and press Confirm to play it. Press Confirm again during playback to return to the file list.
 
 > [!NOTE]
-> The initial setup needs an internet connection to download the declared STM32 tool bundles. `v1.2.2` remains the current stable firmware, `v1.2.6` is the modular-driver prerelease, and `v1.3.0-beta.1` is the newest test build with the converter. Sample `.BIN` files for playback and error handling are available from Releases.
+> The initial setup needs an internet connection to download the declared STM32 tool bundles. `v1.2.2` remains the current stable firmware, `v1.2.6` is the modular-driver prerelease, and `v1.3.0-beta.1` is the current Latest Release with the converter. It still carries a beta label because the conversion workflow is being refined. Sample `.BIN` files for playback and error handling are available from Releases.
 
 <a id="motivation"></a>
 
@@ -447,7 +447,7 @@ Before contributing, please read [CONTRIBUTING.md](CONTRIBUTING.md). For securit
 
 ## 📝 Latest Update
 
-The current stable firmware is **v1.2.2**; **v1.2.6** is the driver-modularization prerelease; [**v1.3.0-beta.1**](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) is the newest test build with the Material 3 desktop converter. GitHub's `/releases/latest` link continues to point to the stable release.
+The current stable firmware is **v1.2.2**; **v1.2.6** is the driver-modularization prerelease; [**v1.3.0-beta.1**](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) is the current Latest Release with the Material 3 desktop converter. It remains a test build, and GitHub's `/releases/latest` link will point to this release.
 
 The complete version history is available in [CHANGELOG.md](CHANGELOG.md).
 

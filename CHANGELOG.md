@@ -4,13 +4,7 @@
 
 ## Unreleased
 
-### OVID Converter
-
-- 桌面端内置 Google Sans Flex，并以 Noto Sans SC 补全简体中文字符，统一控件文字的字重和字形。
-- 固定使用 `zh-CN` 本地化，避免系统语言造成简繁体界面混用。
-- 应用窗口完成初始布局后自动移动到屏幕中央，不再沿用系统或上次运行的随机位置。
-- Windows 安装版和便携版现在会同时打包字体文件及 SIL Open Font License 说明。
-- 本地打包脚本可从项目虚拟环境自动定位 Python，也可通过 `-PythonExecutable` 显式指定，避免 Windows 应用执行别名导致打包失败。
+暂无。
 
 ## v1.3.0-beta.1 OVID 转换器预发布（2026-08-22）
 
@@ -20,13 +14,20 @@
 - 默认使用 128×64、15 FPS、保持比例完整显示、黑色补边和 Floyd–Steinberg 黑白抖动。
 - 支持 `contain`、`cover`、`stretch`、固定阈值、反色、透明区域背景、递归目录和输出覆盖选项。
 - 增加 OLED 像素预览、前后帧、预览播放、进度、预计文件大小和后台取消；长视频通过 FFmpeg 逐帧解码，不整段载入内存。
+- 修复视频预览结束时 `StopIteration` 进入异步任务造成的错误弹窗，末帧会保留在预览区。
+- 预览启用无缝帧切换和单调时钟调度，减少逐帧更新产生的闪烁和节奏不均。
+- 固定阈值会实时刷新当前帧，并增加推荐范围提示；Floyd 抖动与固定阈值切换后会立即重绘预览。
+- 修复窄窗口底部导航重复和页面索引错位的问题。
 - 输出先写入 `.part` 临时文件，成功后原子替换；失败或取消时自动清理。
 - 抽取 OVID v2、CRC16 和 CRC32 公共实现，`h2bin.py` 原有命令继续兼容。
+- 桌面端内置 Google Sans Flex，并以 Noto Sans SC 补全简体中文字符，固定使用 `zh-CN` 本地化，统一简体中文界面的字形和字重。
+- 应用窗口完成初始布局后自动居中；安装版和便携版同时包含字体及其 SIL Open Font License。
 
 ### Windows distribution
 
 - 新增 Windows x64 便携 ZIP，包含 Flet/Flutter 运行时、Pillow、imageio-ffmpeg 和 FFmpeg，解压后无需 Python 即可运行。
 - 新增 Inno Setup 安装版，提供中英文界面、自定义安装目录、开始菜单、可选桌面快捷方式和卸载入口。
+- 新增根目录构建批处理，支持 Python 3.10–3.15；未安装 Inno Setup 时仍可生成 EXE 和便携版 ZIP。
 - 未关联通用 `.BIN` 扩展名；用户生成文件和设置不会随卸载删除。
 - 当前安装包未签名，README 和 Release 中补充 SmartScreen 提示，并随附件提供统一 `SHA256SUMS.txt` 和第三方许可证说明。
 
@@ -35,7 +36,7 @@
 - 应用版本同步更新为 `1.3.0-beta.1`，诊断页显示 `FW V1.3.0-b1`。
 - Release 工作流拆分为 Ubuntu 固件构建、Windows 转换器构建和统一附件发布三个阶段。
 - Release 同时发布 STM32F103C8T6 ELF/BIN、转换器便携版、安装版、示例视频包和统一 SHA-256 校验文件。
-- `v1.2.2` 继续作为稳定版，`v1.2.6` 保留为驱动模块化预发布版，本版本标记为 Pre-release。
+- `v1.2.2` 继续作为稳定固件，`v1.2.6` 保留为驱动模块化预发布版；`v1.3.0-beta.1` 作为当前 Latest Release 发布，beta 标识表示转换器仍在继续完善。
 
 ### Repository, testing and documentation
 
