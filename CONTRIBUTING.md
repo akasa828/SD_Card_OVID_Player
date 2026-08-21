@@ -26,9 +26,9 @@ Use Conventional Commits with an English imperative summary:
 type(scope): imperative summary
 ```
 
-允许的类型为 `feat`、`fix`、`refactor`、`perf`、`docs`、`test`、`build`、`ci`、`chore` 和 `revert`。scope 可以省略，标题不得超过 72 个字符，也不要以句号结尾。
+允许的类型为 `feat`（增加功能）、`fix`（修复问题）、`refactor`（重构代码，但不改变功能）、`perf`（性能优化）、`docs`（文档修改）、`test`（测试代码）、`build`（构建系统、CMake、工具链）、`ci`（GitHub Actions 等自动化配置）、`chore`（仓库整理、资源更新等杂项）和 `revert`（撤销某次修改）。scope 可以省略，标题不要以句号结尾。
 
-Allowed types are `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, `ci`, `chore`, and `revert`. The scope is optional. Keep the subject within 72 characters and do not end it with a period.
+Allowed types are `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, `ci`, `chore`, and `revert`. The scope is optional. Do not end the subject with a period.
 
 ```text
 feat(ui): add a card information page
