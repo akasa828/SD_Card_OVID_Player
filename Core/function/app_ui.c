@@ -3,10 +3,33 @@
 #include "main.h"
 #include "oled.hpp"
 #include "app_ui.h"
+#include "system_diag.h"
 
 #define UI_FONT_SMALL "0806"
 #define UI_FONT_MED   "1206"
 #define UI_FONT_BIG   "1608"
+
+typedef struct {
+    char title[24];
+    char detail[APP_UI_FILE_NAME_MAX];
+    uint32_t started;
+    uint32_t duration;
+    uint8_t active;
+    uint8_t classic;
+} UiPopupState;
+
+static UiPopupState s_popup;
+static void ui_draw_popup_overlay(uint32_t elapsed, uint32_t duration);
+
+static void ui_present(void)
+{
+    if (s_popup.active) {
+        uint32_t elapsed = HAL_GetTick() - s_popup.started;
+        if (elapsed >= s_popup.duration) s_popup.active = 0U;
+        else ui_draw_popup_overlay(elapsed, s_popup.duration);
+    }
+    OLED_Swap_Buffers();
+}
 
 static uint8_t ui_tiny_screen(void)
 {
@@ -18,7 +41,7 @@ static void ui_render_tiny(uint32_t elapsed_ms)
     OLED_GRAM_Clear();
     uint8_t x = (uint8_t)((elapsed_ms / 80U) % OLED_WIDTH);
     OLED_Draw_Point(x, (uint8_t)(OLED_HEIGHT / 2U));
-    OLED_Swap_Buffers();
+    ui_present();
 }
 
 static uint8_t ui_font_w(const char *font)
@@ -90,6 +113,28 @@ static void ui_progress(int16_t x, int16_t y, int16_t w, uint8_t percent)
     if (fill > 0) OLED_Draw_Rectang(x + 2, y + 2, fill, 1, 1);
 }
 
+/* 与拔卡页完全相同的横向反显：白色区域从左向右扩张，已经扫过的
+ * 区域保持反显，最终整页成为白底黑字，而不是一条光带滑出屏幕。 */
+static void ui_invert_reveal(uint32_t elapsed_ms, uint32_t duration_ms)
+{
+    if (duration_ms == 0U) return;
+    if (elapsed_ms > duration_ms) elapsed_ms = duration_ms;
+    int16_t width = (int16_t)((uint32_t)OLED_WIDTH * elapsed_ms / duration_ms);
+    if (width > 0) OLED_SW_Invert_Rect(0, 0, width, OLED_HEIGHT);
+}
+
+static void ui_format_frame_count(uint32_t count, char *text, size_t text_size)
+{
+    if (count < 10000UL)
+        (void)snprintf(text, text_size, "%lu", (unsigned long)count);
+    else if (count < 1000000UL)
+        (void)snprintf(text, text_size, "%luK", (unsigned long)(count / 1000UL));
+    else if (count < 1000000000UL)
+        (void)snprintf(text, text_size, "%luM", (unsigned long)(count / 1000000UL));
+    else
+        (void)snprintf(text, text_size, "%luG", (unsigned long)(count / 1000000000UL));
+}
+
 static void ui_draw_card_icon(int16_t x, int16_t y, int16_t w, int16_t h)
 {
     if (w < 8 || h < 10) return;
@@ -117,15 +162,6 @@ static void ui_page_header(const char *title, uint8_t page, int16_t xoff)
     }
 }
 
-static int16_t ui_page_offset(uint32_t elapsed_ms)
-{
-    if (elapsed_ms < 300U)
-        return (int16_t)((uint32_t)OLED_WIDTH * (300U - elapsed_ms) / 300U);
-    if (elapsed_ms >= 2700U)
-        return -(int16_t)((uint32_t)OLED_WIDTH * (elapsed_ms - 2700U) / 300U);
-    return 0;
-}
-
 void AppUI_Init(void)
 {
     OLED_Select_Buffer(1U);
@@ -141,8 +177,8 @@ void AppUI_RenderWaitCard(uint32_t elapsed_ms)
     int16_t icon_w = compact ? 15 : 24;
     int16_t icon_y = compact ? 2 : 5;
     ui_draw_card_icon(5, icon_y, icon_w, icon_h);
-    ui_text(icon_w + 12, compact ? 3 : 8, "INSERT", compact ? UI_FONT_SMALL : UI_FONT_MED);
-    ui_text(icon_w + 12, compact ? 13 : 22, "SD CARD", compact ? UI_FONT_SMALL : UI_FONT_MED);
+    ui_text(icon_w + 12, compact ? 3 : 8, "Insert", compact ? UI_FONT_SMALL : UI_FONT_MED);
+    ui_text(icon_w + 12, compact ? 13 : 22, "SD card", compact ? UI_FONT_SMALL : UI_FONT_MED);
 
     int16_t tx = 5;
     int16_t ty = OLED_HEIGHT - 8;
@@ -158,7 +194,7 @@ void AppUI_RenderWaitCard(uint32_t elapsed_ms)
         }
         OLED_Draw_Rectang(tx + 2 + pos, ty + 2, seg, 1, 1);
     }
-    OLED_Swap_Buffers();
+    ui_present();
 }
 
 void AppUI_RenderAnalyzing(uint32_t elapsed_ms, const char *detail)
@@ -170,7 +206,7 @@ void AppUI_RenderAnalyzing(uint32_t elapsed_ms, const char *detail)
     int16_t x = (OLED_WIDTH - w) / 2;
     int16_t y = (OLED_HEIGHT - h) / 2;
     ui_panel(x, y, w, h);
-    ui_text_center(0, y + 5, "ANALYZING", (OLED_HEIGHT >= 48U) ? UI_FONT_MED : UI_FONT_SMALL);
+    ui_text_center(0, y + 5, "Analyzing", (OLED_HEIGHT >= 48U) ? UI_FONT_MED : UI_FONT_SMALL);
     if (detail && h >= 28) ui_text_center(0, y + 19, detail, UI_FONT_SMALL);
     int16_t bar_y = y + h - 8;
     int16_t bar_w = w - 10;
@@ -181,7 +217,7 @@ void AppUI_RenderAnalyzing(uint32_t elapsed_ms, const char *detail)
         int16_t pos = (span > 0) ? (int16_t)((elapsed_ms / 20U) % (uint32_t)(span + 1)) : 0;
         OLED_Draw_Rectang(x + 7 + pos, bar_y + 2, seg, 1, 1);
     }
-    OLED_Swap_Buffers();
+    ui_present();
 }
 
 void AppUI_RenderFreeScan(uint8_t percent, uint32_t elapsed_ms)
@@ -191,31 +227,33 @@ void AppUI_RenderFreeScan(uint8_t percent, uint32_t elapsed_ms)
 
     OLED_GRAM_Clear();
     uint8_t compact = (OLED_HEIGHT < 48U);
-    int16_t x = 5;
-    int16_t y = compact ? 2 : 6;
-    int16_t w = OLED_WIDTH - 10;
-    int16_t h = OLED_HEIGHT - (compact ? 4 : 12);
+    int16_t x = compact ? 5 : 4;
+    int16_t y = 2;
+    int16_t w = OLED_WIDTH - (compact ? 10 : 8);
+    int16_t h = OLED_HEIGHT - 4;
     char line[20];
 
     ui_panel(x, y, w, h);
-    ui_text_center(0, y + (compact ? 3 : 6), "FREE SPACE",
+    ui_text_center(0, y + (compact ? 3 : 4), "Free space",
                    compact ? UI_FONT_SMALL : UI_FONT_MED);
-    (void)snprintf(line, sizeof(line), "SCANNING FAT %u%%", percent);
-    ui_text_center(0, y + (compact ? 13 : 23), line, UI_FONT_SMALL);
+    (void)snprintf(line, sizeof(line), "Scanning FAT %u%%", percent);
+    ui_text_center(0, y + (compact ? 13 : 19), line, UI_FONT_SMALL);
 
     int16_t bar_x = x + 8;
-    int16_t bar_y = compact ? (int16_t)OLED_HEIGHT - 8 : y + h - 12;
+    int16_t bar_y = compact ? (int16_t)OLED_HEIGHT - 8 : y + 31;
     int16_t bar_w = w - 16;
     ui_progress(bar_x, bar_y, bar_w, percent);
+    if (!compact) ui_text_center(0, y + 43, "OK: Skip", UI_FONT_SMALL);
 
     /* 进度不变时仍有一个往返光点，明确表示系统没有死机。 */
     if (bar_w > 12) {
         int16_t span = bar_w - 6;
         uint16_t phase = (uint16_t)((elapsed_ms / 24U) % (uint32_t)(span * 2));
         int16_t pos = (phase <= span) ? (int16_t)phase : (int16_t)(span * 2 - phase);
-        OLED_Draw_Point((uint8_t)(bar_x + 3 + pos), (uint8_t)(bar_y + 7));
+        OLED_Draw_Point((uint8_t)(bar_x + 3 + pos),
+                        (uint8_t)(compact ? bar_y + 7 : y + h - 4));
     }
-    OLED_Swap_Buffers();
+    ui_present();
 }
 
 static const char *ui_card_type(uint8_t type)
@@ -224,7 +262,7 @@ static const char *ui_card_type(uint8_t type)
         case SD_TYPE_V1: return "SDSC V1";
         case SD_TYPE_V2: return "SDSC V2";
         case SD_TYPE_V2HC: return "SDHC/SDXC";
-        default: return "UNKNOWN";
+        default: return "Unknown";
     }
 }
 
@@ -235,26 +273,26 @@ void AppUI_RenderInfoPage(uint8_t page, const SD_CardInfo *card,
     if (card == NULL || volume == NULL) return;
     if (ui_tiny_screen()) { ui_render_tiny(elapsed_ms); return; }
     OLED_GRAM_Clear();
-    int16_t xo = ui_page_offset(elapsed_ms);
+    int16_t xo = 0;
     uint8_t compact = (OLED_HEIGHT < 48U);
     char line[28], size_a[16], size_b[16], spi[10];
     ui_format_spi(spi_hz, spi, sizeof(spi));
 
     if (page == 0U) {
-        ui_page_header("STORAGE", page, xo);
+        ui_page_header("Storage", page, xo);
         ui_format_size(volume->total_bytes, size_a, sizeof(size_a));
         if (volume->free_valid) ui_format_size(volume->free_bytes, size_b, sizeof(size_b));
         if (compact) {
             (void)snprintf(line, sizeof(line), "%s  %s", volume->fs_name, size_a);
             ui_text(2 + xo, 12, line, UI_FONT_SMALL);
-            (void)snprintf(line, sizeof(line), "FREE %s", volume->free_valid ? size_b : "N/A");
+            (void)snprintf(line, sizeof(line), "Free %s", volume->free_valid ? size_b : "N/A");
             ui_text(2 + xo, 21, line, UI_FONT_SMALL);
         } else {
             (void)snprintf(line, sizeof(line), "FS    : %s", volume->fs_name);
             ui_text(3 + xo, 14, line, UI_FONT_SMALL);
-            (void)snprintf(line, sizeof(line), "TOTAL : %s", size_a);
+            (void)snprintf(line, sizeof(line), "Total : %s", size_a);
             ui_text(3 + xo, 25, line, UI_FONT_SMALL);
-            (void)snprintf(line, sizeof(line), "FREE  : %s", volume->free_valid ? size_b : "N/A");
+            (void)snprintf(line, sizeof(line), "Free  : %s", volume->free_valid ? size_b : "N/A");
             ui_text(3 + xo, 36, line, UI_FONT_SMALL);
         }
         if (volume->free_valid && volume->total_bytes > 0U) {
@@ -263,26 +301,26 @@ void AppUI_RenderInfoPage(uint8_t page, const SD_CardInfo *card,
             uint8_t used = (uint8_t)(100U - (free_bytes * 100U / volume->total_bytes));
             ui_progress(3 + xo, compact ? 27 : 50, OLED_WIDTH - 6, used);
             if (!compact) {
-                (void)snprintf(line, sizeof(line), "USED %u%%", used);
+                (void)snprintf(line, sizeof(line), "Used %u%%", used);
                 ui_text(OLED_WIDTH - 54 + xo, 56, line, UI_FONT_SMALL);
             }
         }
     } else if (page == 1U) {
-        ui_page_header("CARD", page, xo);
+        ui_page_header("Card", page, xo);
         ui_format_size((uint64_t)card->capacity_mb << 20, size_a, sizeof(size_a));
         if (compact) {
             (void)snprintf(line, sizeof(line), "%s %s", ui_card_type(card->type), size_a);
             ui_text(2 + xo, 12, line, UI_FONT_SMALL);
-            (void)snprintf(line, sizeof(line), "%s  SPI:%s", card->block_addr ? "LBA" : "BYTE", spi);
+            (void)snprintf(line, sizeof(line), "%s  SPI:%s", card->block_addr ? "LBA" : "Byte", spi);
             ui_text(2 + xo, 21, line, UI_FONT_SMALL);
         } else {
             ui_text(3 + xo, 14, ui_card_type(card->type), UI_FONT_MED);
-            (void)snprintf(line, sizeof(line), "CAP   : %s", size_a);
+            (void)snprintf(line, sizeof(line), "Cap   : %s", size_a);
             ui_text(3 + xo, 29, line, UI_FONT_SMALL);
-            (void)snprintf(line, sizeof(line), "ADDR:%s SPI:%s",
-                           card->block_addr ? "LBA" : "BYTE", spi);
+            (void)snprintf(line, sizeof(line), "Addr:%s SPI:%s",
+                           card->block_addr ? "LBA" : "Byte", spi);
             ui_text(3 + xo, 40, line, UI_FONT_SMALL);
-            (void)snprintf(line, sizeof(line), "BLOCKS: %lu", (unsigned long)card->block_count);
+            (void)snprintf(line, sizeof(line), "Blocks: %lu", (unsigned long)card->block_count);
             ui_text(3 + xo, 51, line, UI_FONT_SMALL);
         }
     } else {
@@ -298,7 +336,7 @@ void AppUI_RenderInfoPage(uint8_t page, const SD_CardInfo *card,
         uint32_t psn = ((uint32_t)card->cid_raw[9] << 24) | ((uint32_t)card->cid_raw[10] << 16)
                      | ((uint32_t)card->cid_raw[11] << 8) | card->cid_raw[12];
         uint16_t mdt = (uint16_t)(((uint16_t)(card->cid_raw[13] & 0x0FU) << 8) | card->cid_raw[14]);
-        ui_page_header("IDENTITY", page, xo);
+        ui_page_header("Identity", page, xo);
         if (compact) {
             (void)snprintf(line, sizeof(line), "%s V%u.%u  OID:%s", pnm,
                            card->cid_raw[8] >> 4, card->cid_raw[8] & 0x0FU, oid);
@@ -306,37 +344,36 @@ void AppUI_RenderInfoPage(uint8_t page, const SD_CardInfo *card,
             (void)snprintf(line, sizeof(line), "SN:%08lX", (unsigned long)psn);
             ui_text(2 + xo, 21, line, UI_FONT_SMALL);
         } else {
-            (void)snprintf(line, sizeof(line), "NAME : %s V%u.%u", pnm,
+            (void)snprintf(line, sizeof(line), "Name : %s V%u.%u", pnm,
                            card->cid_raw[8] >> 4, card->cid_raw[8] & 0x0FU);
             ui_text(3 + xo, 14, line, UI_FONT_SMALL);
             (void)snprintf(line, sizeof(line), "MID  : %02X  OID:%s", card->cid_raw[0], oid);
             ui_text(3 + xo, 25, line, UI_FONT_SMALL);
             (void)snprintf(line, sizeof(line), "SN   : %08lX", (unsigned long)psn);
             ui_text(3 + xo, 36, line, UI_FONT_SMALL);
-            (void)snprintf(line, sizeof(line), "DATE : %04u-%02u", 2000U + (mdt >> 4), mdt & 0x0FU);
+            (void)snprintf(line, sizeof(line), "Date : %04u-%02u", 2000U + (mdt >> 4), mdt & 0x0FU);
             ui_text(3 + xo, 47, line, UI_FONT_SMALL);
         }
     }
 
-    if (elapsed_ms < 300U) {
-        int16_t sweep = (int16_t)((uint32_t)OLED_WIDTH * elapsed_ms / 300U);
-        if (sweep > 3) OLED_SW_Invert_Rect(0, 0, sweep, OLED_HEIGHT);
-    }
-    OLED_Swap_Buffers();
+    ui_invert_reveal(elapsed_ms < 300U ? elapsed_ms : 300U, 300U);
+    ui_present();
 }
 
-void AppUI_RenderFileList(const char names[][13], uint8_t count, uint8_t selected,
-                          uint8_t top, uint8_t function_dir, uint32_t elapsed_ms)
+void AppUI_RenderFileList(const char names[][APP_UI_FILE_NAME_MAX], uint8_t count, uint8_t selected,
+                          uint8_t top, uint8_t function_dir, const AppUI_VideoMeta *meta,
+                          uint32_t elapsed_ms)
 {
     (void)elapsed_ms;
     if (ui_tiny_screen()) { ui_render_tiny(elapsed_ms); return; }
     OLED_GRAM_Clear();
     uint8_t y0 = (OLED_HEIGHT >= 24U) ? 11U : 0U;
-    uint8_t rows = (uint8_t)((OLED_HEIGHT - y0) / 9U);
+    uint8_t footer = (OLED_HEIGHT >= 48U) ? 9U : 0U;
+    uint8_t rows = (uint8_t)((OLED_HEIGHT - y0 - footer) / 9U);
     if (rows == 0U) rows = 1U;
     if (y0 != 0U) {
         char title[18];
-        (void)snprintf(title, sizeof(title), "FILES %u", count);
+        (void)snprintf(title, sizeof(title), "Files %u", count);
         ui_text(2, 1, title, UI_FONT_SMALL);
         ui_text(OLED_WIDTH > 32U ? OLED_WIDTH - 30 : 0, 1, function_dir ? "/FN" : "/", UI_FONT_SMALL);
         OLED_Draw_Line(0, 9, OLED_WIDTH - 1, 0, 0);
@@ -353,14 +390,28 @@ void AppUI_RenderFileList(const char names[][13], uint8_t count, uint8_t selecte
         }
     }
     if (count > rows && OLED_WIDTH >= 4U) {
-        uint8_t track = (uint8_t)(OLED_HEIGHT - y0);
+        uint8_t track = (uint8_t)(OLED_HEIGHT - y0 - footer);
         uint8_t knob = (uint8_t)((uint16_t)track * rows / count);
         if (knob < 3U) knob = 3U;
         uint8_t ky = (uint8_t)(y0 + (uint16_t)(track - knob) * top / (count - rows));
         OLED_Draw_Line(OLED_WIDTH - 2, y0, 0, track - 1, 0);
         OLED_Draw_Rectang(OLED_WIDTH - 3, ky, 2, knob - 1, 1);
     }
-    OLED_Swap_Buffers();
+    if (footer && meta != NULL && selected < count) {
+        char info[28];
+        char frame_count[6];
+        OLED_Draw_Line(0, OLED_HEIGHT - footer - 1, OLED_WIDTH - 1, 0, 0);
+        if (meta[selected].valid) {
+            ui_format_frame_count(meta[selected].frames, frame_count, sizeof(frame_count));
+            (void)snprintf(info, sizeof(info), "%ux%u %uF %s V%u",
+                           meta[selected].width, meta[selected].height,
+                           meta[selected].fps, frame_count, meta[selected].version);
+        } else {
+            (void)snprintf(info, sizeof(info), "OVID info N/A");
+        }
+        ui_text(2, OLED_HEIGHT - 8, info, UI_FONT_SMALL);
+    }
+    ui_present();
 }
 
 void AppUI_RenderEmpty(uint8_t function_dir, uint32_t elapsed_ms)
@@ -375,11 +426,11 @@ void AppUI_RenderEmpty(uint8_t function_dir, uint32_t elapsed_ms)
     OLED_Draw_Line(x + 2, y, w / 2, 0, 0);
     OLED_Draw_Line(x + 2, y, 0, 4, 0);
     ui_text_center(0, OLED_HEIGHT >= 40U ? OLED_HEIGHT - 14 : OLED_HEIGHT - 8,
-                   function_dir ? "NO .BIN IN /FN" : "NO .BIN FILES", UI_FONT_SMALL);
+                   function_dir ? "No .BIN in /FN" : "No .BIN files", UI_FONT_SMALL);
     uint8_t dots = (uint8_t)((elapsed_ms / 350U) % 4U);
     for (uint8_t i = 0; i < dots; ++i)
         OLED_Draw_Circle((int16_t)(OLED_WIDTH / 2 - 5 + i * 5), y + h + 1, 1, 1);
-    OLED_Swap_Buffers();
+    ui_present();
 }
 
 void AppUI_RenderPersistentError(const char *title, const char *detail, uint32_t elapsed_ms)
@@ -394,56 +445,156 @@ void AppUI_RenderPersistentError(const char *title, const char *detail, uint32_t
     if (pulse) OLED_Draw_Point((uint8_t)(x + 10), (uint8_t)(y + 14));
     ui_text(x + 21, y + 5, title, (OLED_HEIGHT >= 48U) ? UI_FONT_MED : UI_FONT_SMALL);
     if (OLED_HEIGHT >= 28U) ui_text_center(0, y + h - 12, detail, UI_FONT_SMALL);
-    OLED_Swap_Buffers();
+    ui_present();
 }
 
 void AppUI_RenderRemoved(uint32_t elapsed_ms)
 {
     if (ui_tiny_screen()) { ui_render_tiny(elapsed_ms); return; }
     OLED_GRAM_Clear();
-    ui_text_center(0, (OLED_HEIGHT >= 48U) ? 13 : 5, "CARD REMOVED",
+    ui_text_center(0, (OLED_HEIGHT >= 48U) ? 13 : 5, "Card removed",
                    (OLED_HEIGHT >= 48U) ? UI_FONT_MED : UI_FONT_SMALL);
-    ui_text_center(0, (OLED_HEIGHT >= 48U) ? 32 : 16, "REINSERT SD", UI_FONT_SMALL);
+    ui_text_center(0, (OLED_HEIGHT >= 48U) ? 32 : 16, "Reinsert SD", UI_FONT_SMALL);
     uint32_t phase = (elapsed_ms > 600U) ? 600U : elapsed_ms;
     int16_t w = (int16_t)((uint32_t)OLED_WIDTH * phase / 600U);
     if (w > 0) OLED_SW_Invert_Rect(0, 0, w, OLED_HEIGHT);
-    OLED_Swap_Buffers();
+    ui_present();
 }
 
-static void ui_render_popup(const char *title, const char *detail, uint32_t elapsed, uint32_t duration)
+void AppUI_RenderDiagnostics(uint8_t page, uint8_t key_mask, int16_t sd_test_result,
+                             uint32_t elapsed_ms)
 {
-    if (ui_tiny_screen()) { ui_render_tiny(elapsed); return; }
+    (void)elapsed_ms;
     OLED_GRAM_Clear();
-    uint32_t edge = 180U;
-    uint32_t scale = 100U;
-    if (elapsed < edge) scale = elapsed * 100U / edge;
-    else if (duration > edge && elapsed > duration - edge) scale = (duration - elapsed) * 100U / edge;
-    if (scale > 100U) scale = 100U;
+    char line[40];
+    ui_page_header("Diagnostics", (uint8_t)(page % APP_UI_INFO_PAGES), 0);
+    if (page == 0U) {
+        ui_text(2, 13, "FW V1.2.0", UI_FONT_SMALL);
+        (void)snprintf(line, sizeof(line), "Reset:%s State:%u",
+                       SystemDiag_WasWatchdogReset() ? "IWDG" : "Normal",
+                       (unsigned int)SystemDiag_GetState());
+        ui_text(2, 24, line, UI_FONT_SMALL);
+        (void)snprintf(line, sizeof(line), "Flash:%lu RAM:%lu",
+                       (unsigned long)SystemDiag_GetFlashBytes(),
+                       (unsigned long)SystemDiag_GetStaticRamBytes());
+        ui_text(2, 35, line, UI_FONT_SMALL);
+        (void)snprintf(line, sizeof(line), "Stack:%lu Key:%u%u%u",
+                       (unsigned long)SystemDiag_GetStackMargin(),
+                       (key_mask >> 2U) & 1U, (key_mask >> 1U) & 1U, key_mask & 1U);
+        ui_text(2, 46, line, UI_FONT_SMALL);
+    } else if (page == 1U) {
+        uint32_t spi_hz = 0U;
+        if (g_sd_card.io.get_bus_clk && g_sd_card.io.get_prescaler) {
+            uint32_t divider = 2UL << (g_sd_card.io.get_prescaler() >> 3U);
+            if (divider) spi_hz = g_sd_card.io.get_bus_clk() / divider;
+        }
+        (void)snprintf(line, sizeof(line), "SD:%s T:%u E:%lu",
+                       g_sd_card.info.initialized ? "Ready" : "Wait",
+                       g_sd_card.info.type, (unsigned long)SystemDiag_GetSdErrorCount());
+        ui_text(2, 13, line, UI_FONT_SMALL);
+        (void)snprintf(line, sizeof(line), "SPI:%luk I2C:%luk D:%u",
+                       (unsigned long)(spi_hz / 1000U),
+                       (unsigned long)(OLED_Get_I2C_Clock() / 1000U), OLED_DMA_Busy);
+        ui_text(2, 24, line, UI_FONT_SMALL);
+        if (sd_test_result == INT16_MIN)
+            (void)snprintf(line, sizeof(line), "SD test: OK key");
+        else if (sd_test_result == 0)
+            (void)snprintf(line, sizeof(line), "SD test: Pass");
+        else
+            (void)snprintf(line, sizeof(line), "SD test: Fail %d", sd_test_result);
+        ui_text(2, 35, line, UI_FONT_SMALL);
+        (void)snprintf(line, sizeof(line), "I2C err:%lu T:%lu",
+                       (unsigned long)OLED_Get_I2C_Error_Count(),
+                       (unsigned long)OLED_Get_I2C_Timeout_Count());
+        ui_text(2, 46, line, UI_FONT_SMALL);
+    } else {
+        const SystemFaultRecord *fault = SystemDiag_GetFaultRecord();
+        if (SystemDiag_HasFaultRecord()) {
+            (void)snprintf(line, sizeof(line), "PC:%08lX", (unsigned long)fault->stacked_pc);
+            ui_text(2, 13, line, UI_FONT_SMALL);
+            (void)snprintf(line, sizeof(line), "LR:%08lX", (unsigned long)fault->stacked_lr);
+            ui_text(2, 24, line, UI_FONT_SMALL);
+            (void)snprintf(line, sizeof(line), "CFSR:%08lX", (unsigned long)fault->cfsr);
+            ui_text(2, 35, line, UI_FONT_SMALL);
+            (void)snprintf(line, sizeof(line), "State:%lu %.10s",
+                           (unsigned long)fault->app_state, fault->current_file);
+            ui_text(2, 46, line, UI_FONT_SMALL);
+        } else {
+            ui_text_center(0, 28, "No saved fault", UI_FONT_SMALL);
+        }
+    }
+    if (OLED_HEIGHT >= 64U)
+        ui_text_center(0, 56, page == 1U ? "OK SD test  Up/Dn" : "Up/Dn page  OK exit", UI_FONT_SMALL);
+    ui_present();
+}
+
+static void ui_draw_popup_overlay(uint32_t elapsed, uint32_t duration)
+{
+    if (ui_tiny_screen()) return;
     int16_t target_w = (OLED_WIDTH > 10U) ? OLED_WIDTH - 10 : OLED_WIDTH;
     int16_t target_h = (OLED_HEIGHT >= 48U) ? 38 : OLED_HEIGHT - 4;
+    uint32_t edge = s_popup.classic ? 180U : 300U;
+    uint32_t scale = 100U;
+
+    if (s_popup.classic) {
+        if (elapsed < edge) scale = elapsed * 100U / edge;
+        else if (duration > edge && elapsed > duration - edge)
+            scale = (duration - elapsed) * 100U / edge;
+        if (scale > 100U) scale = 100U;
+    }
+
     int16_t w = (int16_t)((uint32_t)target_w * scale / 100U);
     int16_t h = (int16_t)((uint32_t)target_h * scale / 100U);
+    if (w < 4 || h < 4) return;
     int16_t x = (OLED_WIDTH - w) / 2;
     int16_t y = (OLED_HEIGHT - h) / 2;
+    OLED_Clear_Rect(x, y, w, h);
     ui_panel(x, y, w, h);
-    if (scale >= 72U) {
-        ui_text_center(0, y + 5, title, (OLED_HEIGHT >= 48U) ? UI_FONT_MED : UI_FONT_SMALL);
-        if (detail && h >= 27) ui_text_center(0, y + h - 12, detail, UI_FONT_SMALL);
+    if (!s_popup.classic || scale >= 72U) {
+        ui_text_center(0, y + 5, s_popup.title,
+                       (OLED_HEIGHT >= 48U) ? UI_FONT_MED : UI_FONT_SMALL);
+        if (s_popup.detail[0] && h >= 27)
+            ui_text_center(0, y + h - 12, s_popup.detail, UI_FONT_SMALL);
     }
-    OLED_Swap_Buffers();
+    if (!s_popup.classic)
+        ui_invert_reveal(elapsed < edge ? elapsed : edge, edge);
+}
+
+static void ui_start_popup(const char *title, const char *detail,
+                           uint32_t duration_ms, uint8_t classic)
+{
+    if (duration_ms < 2U) duration_ms = 2U;
+    (void)snprintf(s_popup.title, sizeof(s_popup.title), "%s", title ? title : "");
+    (void)snprintf(s_popup.detail, sizeof(s_popup.detail), "%s", detail ? detail : "");
+    s_popup.started = HAL_GetTick();
+    s_popup.duration = duration_ms;
+    s_popup.classic = classic;
+    s_popup.active = 1U;
 }
 
 void AppUI_ShowPopup(const char *title, const char *detail, uint32_t duration_ms)
 {
-    if (duration_ms < 2U) duration_ms = 2U;
-    uint32_t start = HAL_GetTick();
-    uint32_t elapsed;
-    do {
-        uint32_t frame_start = HAL_GetTick();
-        elapsed = frame_start - start;
-        if (elapsed > duration_ms) elapsed = duration_ms;
-        ui_render_popup(title, detail, elapsed, duration_ms);
-        uint32_t dt = HAL_GetTick() - frame_start;
-        if (dt < APP_UI_FRAME_MS) HAL_Delay(APP_UI_FRAME_MS - dt);
-    } while ((HAL_GetTick() - start) < duration_ms);
+    ui_start_popup(title, detail, duration_ms, 0U);
+}
+
+void AppUI_ShowClassicPopup(const char *title, const char *detail, uint32_t duration_ms)
+{
+    ui_start_popup(title, detail, duration_ms, 1U);
+}
+
+uint8_t AppUI_PopupActive(void)
+{
+    if (s_popup.active && HAL_GetTick() - s_popup.started >= s_popup.duration)
+        s_popup.active = 0U;
+    return s_popup.active;
+}
+
+void AppUI_PopupCancel(void) { s_popup.active = 0U; }
+
+void AppUI_RenderPopupTask(void)
+{
+    OLED_GRAM_Clear();
+    if (AppUI_PopupActive())
+        ui_draw_popup_overlay(HAL_GetTick() - s_popup.started, s_popup.duration);
+    OLED_Swap_Buffers();
 }
