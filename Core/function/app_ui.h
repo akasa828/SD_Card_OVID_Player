@@ -35,7 +35,8 @@ typedef struct {
 void AppUI_Init(void);
 void AppUI_RenderWaitCard(uint32_t elapsed_ms);
 void AppUI_RenderAnalyzing(uint32_t elapsed_ms, const char *detail);
-void AppUI_RenderFreeScan(uint8_t percent, uint32_t elapsed_ms);
+void AppUI_RenderFreeScan(uint16_t display_permille, uint16_t target_permille,
+                          uint32_t elapsed_ms);
 void AppUI_RenderInfoPage(uint8_t page, const SD_CardInfo *card,
                           const AppUI_VolumeInfo *volume, uint32_t spi_hz,
                           uint32_t elapsed_ms);

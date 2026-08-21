@@ -84,6 +84,8 @@ static uint8_t s_media_lost = 0;                   /* 统一热拔插恢复标�
 static AppUI_VolumeInfo s_volume;                  /* UI 与 FatFs 解耦的卷信息 */
 static uint32_t s_free_scan_started;
 static uint32_t s_free_scan_last_ui;
+static uint16_t s_free_scan_target_permille;
+static uint16_t s_free_scan_display_permille;
 static uint32_t s_dir_scan_started;
 static uint32_t s_dir_scan_last_ui;
 static uint32_t s_dir_scan_entries;
@@ -92,13 +94,27 @@ static uint8_t s_dir_scan_aborted;
 static uint8_t s_free_scan_skipped;
 static uint8_t s_last_selected;
 
+static void frame_delay(uint32_t frame_start);
+
 _Static_assert(sizeof(FN_VideoHeader) == 16U, "OVID header must be 16 bytes");
 _Static_assert(FN_NAME_MAX == APP_UI_FILE_NAME_MAX, "UI and browser name sizes must match");
 
 /*
- * FatFs 完整 FAT 扫描进度钩子。每个 FAT 扇区都会触发，但 OLED 最多约 10 FPS
- * 刷新，避免 I2C 动画反过来显著拖慢大容量卡扫描。
+ * FatFs 完整 FAT 扫描进度钩子。每个 FAT 扇区都会触发，UI 以 16 ms
+ * 周期平滑追赶真实扫描进度，正常总线下保持不低于 60 FPS。
  */
+static void free_scan_advance_display(void)
+{
+    if (s_free_scan_display_permille >= s_free_scan_target_permille) return;
+    uint16_t remaining = (uint16_t)(s_free_scan_target_permille -
+                                    s_free_scan_display_permille);
+    uint16_t step = (uint16_t)((remaining + 3U) / 4U);
+    if (step == 0U) step = 1U;
+    s_free_scan_display_permille = (uint16_t)(s_free_scan_display_permille + step);
+    if (s_free_scan_display_permille > s_free_scan_target_permille)
+        s_free_scan_display_permille = s_free_scan_target_permille;
+}
+
 int FF_FreeScan_Progress(DWORD scanned_entries, DWORD total_entries)
 {
     uint32_t now = HAL_GetTick();
@@ -111,18 +127,15 @@ int FF_FreeScan_Progress(DWORD scanned_entries, DWORD total_entries)
         s_free_scan_skipped = 1U;
         return 1;
     }
-    if (scanned_entries == 0U || s_free_scan_started == 0U) {
-        s_free_scan_started = now;
-        s_free_scan_last_ui = now;
-        AppUI_RenderFreeScan(0U, 0U);
-        return 0;
-    }
-    if (scanned_entries < total_entries && now - s_free_scan_last_ui < 33U) return 0;
+    uint32_t target = total_entries == 0U ? 1000U :
+                      (uint32_t)((uint64_t)scanned_entries * 1000U / total_entries);
+    if (target > 1000U) target = 1000U;
+    s_free_scan_target_permille = (uint16_t)target;
+    if (now - s_free_scan_last_ui < APP_UI_FRAME_MS) return 0;
 
-    uint8_t percent = total_entries == 0U ? 100U :
-                      (uint8_t)(((uint64_t)scanned_entries * 100U) / total_entries);
-    if (percent > 100U) percent = 100U;
-    AppUI_RenderFreeScan(percent, now - s_free_scan_started);
+    free_scan_advance_display();
+    AppUI_RenderFreeScan(s_free_scan_display_permille, s_free_scan_target_permille,
+                         now - s_free_scan_started);
     s_free_scan_last_ui = HAL_GetTick();
     return 0;
 }
@@ -143,7 +156,7 @@ int FF_DirScan_Guard(void)
         s_dir_scan_aborted = 1U;
         return 1;
     }
-    if (now - s_dir_scan_last_ui >= 33U) {
+    if (now - s_dir_scan_last_ui >= APP_UI_FRAME_MS) {
         char detail[20];
         (void)snprintf(detail, sizeof(detail), "Files %lu",
                        (unsigned long)s_dir_scan_entries);
@@ -318,8 +331,8 @@ static FRESULT fs_mount_collect_and_scan(void)
 
     (void)memset(&s_volume, 0, sizeof(s_volume));
     s_free_scan_skipped = 0U;
-    s_free_scan_started = 0U;
-    s_free_scan_last_ui = 0U;
+    s_free_scan_target_permille = 0U;
+    s_free_scan_display_permille = 0U;
     fr = f_mount(&s_fs, "", 1);
     if (fr != FR_OK) return fr;
 
@@ -330,6 +343,9 @@ static FRESULT fs_mount_collect_and_scan(void)
            s_volume.fs_name, (unsigned long)(s_fs.n_fatent - 2U));
     SystemDiag_SetState(APP_STATE_FREE_SCAN);
     s_key_ok = 0U;
+    s_free_scan_started = HAL_GetTick();
+    s_free_scan_last_ui = s_free_scan_started;
+    AppUI_RenderFreeScan(0U, 0U, 0U);
     fr = f_getfree("", &free_clusters, &mounted);
     printf("[FATFS] f_getfree returned: %d\n", (int)fr);
     if (fr == FR_OK && mounted != NULL) {
@@ -338,8 +354,22 @@ static FRESULT fs_mount_collect_and_scan(void)
         if (s_volume.free_bytes > s_volume.total_bytes)
             s_volume.free_bytes = s_volume.total_bytes;
         s_volume.free_valid = 1U;
-        /* 100% 只在 f_getfree 真正返回后显示，彻底离开 FatFs 内部回调。 */
-        AppUI_RenderFreeScan(100U, HAL_GetTick() - s_free_scan_started);
+        /* 扫描完成后用最多 320 ms 平滑追到 100%，不把真实 I/O 进度伪造成瞬间完成。 */
+        s_free_scan_target_permille = 1000U;
+        uint32_t finish_started = HAL_GetTick();
+        while (s_free_scan_display_permille < 1000U &&
+               HAL_GetTick() - finish_started < 320U) {
+            uint32_t frame = HAL_GetTick();
+            free_scan_advance_display();
+            AppUI_RenderFreeScan(s_free_scan_display_permille,
+                                 s_free_scan_target_permille,
+                                 frame - s_free_scan_started);
+            frame_delay(frame);
+        }
+        if (s_free_scan_display_permille < 1000U) {
+            s_free_scan_display_permille = 1000U;
+            AppUI_RenderFreeScan(1000U, 1000U, HAL_GetTick() - s_free_scan_started);
+        }
         OLED_Wait_DMA();
     } else if (s_free_scan_skipped) {
         printf("[FATFS] free-space scan skipped by user; Free=N/A\n");
