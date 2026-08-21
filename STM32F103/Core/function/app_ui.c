@@ -155,6 +155,35 @@ static void ui_text_center(int16_t xoff, int16_t y, const char *text, const char
     ui_text(x, y, text, font);
 }
 
+/* 将弹窗文本限制在内框中；过长时保留开头并追加省略号。 */
+static void ui_text_center_fit(int16_t clip_left, int16_t clip_right,
+                               int16_t y, const char *text, const char *font)
+{
+    if (text == NULL || clip_right <= clip_left) return;
+    uint8_t step = ui_font_w(font);
+    size_t max_chars = (size_t)(clip_right - clip_left) / step;
+    if (max_chars == 0U) return;
+
+    size_t length = strlen(text);
+    if (length <= max_chars) {
+        int16_t x = clip_left + ((clip_right - clip_left) - (int16_t)(length * step)) / 2;
+        ui_text_clipped(x, y, text, font, clip_left, clip_right);
+        return;
+    }
+
+    char fitted[APP_UI_FILE_NAME_MAX];
+    if (max_chars >= sizeof(fitted)) max_chars = sizeof(fitted) - 1U;
+    size_t kept = max_chars > 3U ? max_chars - 3U : max_chars;
+    (void)memcpy(fitted, text, kept);
+    if (max_chars > 3U) {
+        fitted[kept++] = '.';
+        fitted[kept++] = '.';
+        fitted[kept++] = '.';
+    }
+    fitted[kept] = '\0';
+    ui_text_clipped(clip_left, y, fitted, font, clip_left, clip_right);
+}
+
 static void ui_format_size(uint64_t bytes, char *out, size_t out_size)
 {
     uint32_t mib = (uint32_t)(bytes >> 20);
@@ -528,7 +557,7 @@ static int16_t ui_selected_name_offset(const char *name, int16_t available_width
 static void ui_draw_inverse_status(uint8_t enabled)
 {
     const char *label = (OLED_WIDTH >= 112U) ?
-                        (enabled ? "Inv on" : "Inv off") :
+                        (enabled ? "Inv ON" : "Inv OFF") :
                         (enabled ? "I1" : "I0");
     int16_t width = (int16_t)ui_text_width(label, UI_FONT_SMALL);
     int16_t x = (int16_t)OLED_WIDTH - width - 2;
@@ -556,8 +585,14 @@ void AppUI_RenderFileList(const char names[][APP_UI_FILE_NAME_MAX], uint8_t coun
         ui_draw_inverse_status(inverse_enabled);
         OLED_Draw_Line(0, 9, OLED_WIDTH - 1, 0, 0);
     }
-    int16_t name_left = 8;
-    int16_t name_right = OLED_WIDTH > 12U ? OLED_WIDTH - 4 : OLED_WIDTH;
+    /* 文字窗口直接由白色反显矩形推导。128 px 屏上矩形范围为
+     * [2, 123)，文字范围为 [8, 117)，左右视觉留白均为 6 px。 */
+    int16_t highlight_left = (OLED_WIDTH > 8U) ? 2 : 0;
+    int16_t highlight_span = (OLED_WIDTH > 8U) ? OLED_WIDTH - 7 : OLED_WIDTH;
+    int16_t highlight_right = highlight_left + highlight_span;
+    int16_t text_margin = (highlight_span > 16) ? 6 : 1;
+    int16_t text_left = highlight_left + text_margin;
+    int16_t text_right = highlight_right - text_margin;
     int16_t highlight_y = ui_list_prepare_animation(count, selected, top, y0, elapsed_ms);
     uint32_t selected_age = elapsed_ms - s_list_anim.selected_since;
 
@@ -566,12 +601,11 @@ void AppUI_RenderFileList(const char names[][APP_UI_FILE_NAME_MAX], uint8_t coun
         if (idx >= count) break;
         uint8_t y = (uint8_t)(y0 + row * 9U);
         int16_t offset = idx == selected ?
-                         ui_selected_name_offset(names[idx], name_right - name_left, selected_age) : 0;
-        ui_text_clipped(name_left - offset, y, names[idx], UI_FONT_SMALL,
-                        name_left, name_right);
+                         ui_selected_name_offset(names[idx], text_right - text_left, selected_age) : 0;
+        ui_text_clipped(text_left - offset, y, names[idx], UI_FONT_SMALL,
+                        text_left, text_right);
     }
-    OLED_SW_Invert_Rect(2, highlight_y,
-                        (OLED_WIDTH > 8U) ? OLED_WIDTH - 7 : OLED_WIDTH, 8);
+    OLED_SW_Invert_Rect(highlight_left, highlight_y, highlight_span, 8);
     OLED_Draw_Line(3, highlight_y + 2, 3, 2, 0);
     OLED_Draw_Line(3, highlight_y + 6, 3, -2, 0);
     if (count > rows && OLED_WIDTH >= 4U) {
@@ -732,10 +766,11 @@ static void ui_draw_popup_overlay(uint32_t elapsed, uint32_t duration)
         const uint32_t reveal_ms = 300U;
         uint8_t compact = OLED_HEIGHT < 48U;
         OLED_GRAM_Clear();
-        ui_text_center(0, compact ? 5 : 13, s_popup.title,
-                       compact ? UI_FONT_SMALL : UI_FONT_MED);
+        ui_text_center_fit(2, OLED_WIDTH - 2, compact ? 5 : 13, s_popup.title,
+                           compact ? UI_FONT_SMALL : UI_FONT_MED);
         if (s_popup.detail[0])
-            ui_text_center(0, compact ? 17 : 32, s_popup.detail, UI_FONT_SMALL);
+            ui_text_center_fit(2, OLED_WIDTH - 2, compact ? 17 : 32,
+                               s_popup.detail, UI_FONT_SMALL);
         ui_invert_reveal(elapsed < reveal_ms ? elapsed : reveal_ms, reveal_ms);
         return;
     }
@@ -758,10 +793,13 @@ static void ui_draw_popup_overlay(uint32_t elapsed, uint32_t duration)
     OLED_Clear_Rect(x, y, w, h);
     ui_panel(x, y, w, h);
     if (scale >= 72U) {
-        ui_text_center(0, y + 5, s_popup.title,
-                       (OLED_HEIGHT >= 48U) ? UI_FONT_MED : UI_FONT_SMALL);
+        int16_t clip_left = x + 3;
+        int16_t clip_right = x + w - 3;
+        ui_text_center_fit(clip_left, clip_right, y + 5, s_popup.title,
+                           (OLED_HEIGHT >= 48U) ? UI_FONT_MED : UI_FONT_SMALL);
         if (s_popup.detail[0] && h >= 27)
-            ui_text_center(0, y + h - 12, s_popup.detail, UI_FONT_SMALL);
+            ui_text_center_fit(clip_left, clip_right, y + h - 12,
+                               s_popup.detail, UI_FONT_SMALL);
     }
 }
 
