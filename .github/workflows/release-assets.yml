@@ -49,16 +49,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp STM32F103/build/release-assets/SD_Card_OVID_Player.elf "dist/SD_Card_OVID_Player_${RELEASE_TAG}.elf"
-          cp STM32F103/build/release-assets/SD_Card_OVID_Player.bin "dist/SD_Card_OVID_Player_${RELEASE_TAG}.bin"
+          cp STM32F103/build/release-assets/SD_Card_OVID_Player.elf "dist/SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.elf"
+          cp STM32F103/build/release-assets/SD_Card_OVID_Player.bin "dist/SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.bin"
           gh release download "$SAMPLE_ASSET_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "$SAMPLE_ASSET_NAME" \
             --dir dist
           (
             cd dist
-            sha256sum "SD_Card_OVID_Player_${RELEASE_TAG}.elf" \
-              "SD_Card_OVID_Player_${RELEASE_TAG}.bin" \
+            sha256sum "SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.elf" \
+              "SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.bin" \
               "$SAMPLE_ASSET_NAME" > SHA256SUMS.txt
           )
 
@@ -68,8 +68,8 @@ jobs:
         shell: bash
         run: |
           gh release upload "$RELEASE_TAG" \
-            "dist/SD_Card_OVID_Player_${RELEASE_TAG}.elf" \
-            "dist/SD_Card_OVID_Player_${RELEASE_TAG}.bin" \
+            "dist/SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.elf" \
+            "dist/SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.bin" \
             "dist/$SAMPLE_ASSET_NAME" \
             dist/SHA256SUMS.txt \
             --clobber
