@@ -4956,7 +4956,7 @@ FRESULT f_getfree (
 	FFOBJID obj;
 
 #if FF_USE_FREE_SCAN_PROGRESS
-	extern void FF_FreeScan_Progress (DWORD scanned_entries, DWORD total_entries);
+extern int FF_FreeScan_Progress (DWORD scanned_entries, DWORD total_entries);
 #endif
 
 
@@ -4972,7 +4972,7 @@ FRESULT f_getfree (
 			/* Scan FAT to obtain the correct free cluster count */
 			nfree = 0;
 #if FF_USE_FREE_SCAN_PROGRESS
-			FF_FreeScan_Progress(0, fs->n_fatent);
+			(void)FF_FreeScan_Progress(0, fs->n_fatent);
 #endif
 			if (fs->fs_type == FS_FAT12) {	/* FAT12: Scan bit field FAT entries */
 				clst = 2; obj.fs = fs;
@@ -4986,7 +4986,7 @@ FRESULT f_getfree (
 					}
 					if (stat == 0) nfree++;
 #if FF_USE_FREE_SCAN_PROGRESS
-					if ((clst & 0xFF) == 0) FF_FreeScan_Progress(clst, fs->n_fatent);
+					if ((clst & 0xFF) == 0 && FF_FreeScan_Progress(clst, fs->n_fatent)) { res = FR_INT_ERR; break; }
 #endif
 				} while (++clst < fs->n_fatent);
 			} else {
@@ -5003,7 +5003,7 @@ FRESULT f_getfree (
 							res = move_window(fs, sect++);
 							if (res != FR_OK) break;
 #if FF_USE_FREE_SCAN_PROGRESS
-							FF_FreeScan_Progress(fs->n_fatent - clst, fs->n_fatent);
+							if (FF_FreeScan_Progress(fs->n_fatent - clst, fs->n_fatent)) { res = FR_INT_ERR; break; }
 #endif
 						}
 						for (b = 8, bm = ~fs->win[i]; b && clst; b--, clst--) {	/* Count clear bits in a byte */
@@ -5023,7 +5023,7 @@ FRESULT f_getfree (
 							res = move_window(fs, sect++);
 							if (res != FR_OK) break;
 #if FF_USE_FREE_SCAN_PROGRESS
-							FF_FreeScan_Progress(fs->n_fatent - clst, fs->n_fatent);
+							if (FF_FreeScan_Progress(fs->n_fatent - clst, fs->n_fatent)) { res = FR_INT_ERR; break; }
 #endif
 						}
 						if (fs->fs_type == FS_FAT16) {
