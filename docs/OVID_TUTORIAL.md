@@ -8,6 +8,9 @@
 
 [← 返回项目 README](../README.md)
 
+> [!NOTE]
+> 这是保留的可选高级流程。多数用户可以直接下载 [OVID Converter v1.3.0-beta.1](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1)，从图片、图片目录、GIF 或视频直接生成 OVID `.BIN`；下面的正文不变，适合希望查看和控制每个中间步骤的人。
+
 > 以下 拿 `Bad Apple.mp4 举例`
 
 由于`F103C8T6`不适合也不好直接塞个`MP4`解码器进去，导致步骤比较多，但是能播放已经很好了
@@ -130,16 +133,16 @@ python tools/h2bin.py info OUTPUT.BIN
 确认格式、宽高、帧数、FPS 和 CRC 都正常后，再把 `.BIN` 放入 SD 卡的 `/function` 目录。
 
 <details>
-<summary><strong>可选：直接从图片目录或 GIF 生成</strong></summary>
+<summary><strong>可选：用源码命令行直接转换</strong></summary>
 
-`h2bin.py` 仍然保留了直接读取图片和 GIF 的快捷方式。这条路线需要 Pillow：
+不启动 GUI 时，可以调用与桌面转换器相同的转换核心。这条路线支持图片、图片目录、GIF 和视频：
 
 ```bash
-python -m pip install Pillow
-python tools/h2bin.py from-images frames/ OUTPUT.BIN -W 128 -H 64 --fps 15
+python -m pip install -r tools/requirements-converter.txt
+python tools/media2ovid.py INPUT.mp4 OUTPUT.BIN -W 128 -H 64 --fps 15
 ```
 
-它适合快速测试；上面的 Img2Lcd 流程更便于按照图形工具中的扫描方式检查每一帧取模结果。
+它适合自动化和批处理；上面的 Img2Lcd 流程更便于按照图形工具中的扫描方式检查每一帧取模结果。
 
 </details>
 

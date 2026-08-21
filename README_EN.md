@@ -36,6 +36,9 @@
 > [!TIP]
 > A ready-to-use set of sample `.BIN` files for testing normal playback and error handling is available exclusively from [GitHub Releases](https://github.com/akasa828/SD_Card_OVID_Player/releases/latest).
 
+> [!NOTE]
+> The new [OVID Converter v1.3.0-beta.1](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) converts images, image folders, GIFs, and common video files directly into OVID `.BIN` files without manual `.c/.h` intermediates. This is its first public preview.
+
 SD Card OVID Player is an offline frame-video player for the STM32F103C8T6, built on the STM32 HAL. Video files are stored on an Micro SD card and accessed through FatFs. After browsing and validating a file, the firmware sends its frames to an SSD1306 or SH1106 monochrome OLED at the frame rate stored in the file header. Playback only needs three buttons and does not depend on a computer or network connection. OVID can be read as “OLED Video”: a frame-data format designed for monochrome displays.
 
 The project uses CMake and includes configurations for VS Code, ST's official STM32 extension, and ST-Link. After downloading the complete source tree, you can build, flash, and debug the firmware directly from VS Code.
@@ -94,7 +97,7 @@ The repository is organized by target platform: `STM32F103/` contains the comple
 
 - [ ] Because the STM32F103C8T6 is currently limited by its available Flash and RAM, port the player to ESP32 and continue developing it on a platform with more resources.
 - [x] Separate the SPI Micro SD + FatFs filesystem driver and the SSD1306/SH1106 OLED driver into independent, reusable, and easier-to-port modules.
-- [ ] Simplify the workflow for converting images, GIFs, or video sources into OVID `.BIN` files, reducing the need for multiple external graphics tools and intermediate files.
+- [x] Simplify conversion from images, GIFs, and videos with the direct-media OVID Converter.
 
 <a id="features"></a>
 
@@ -119,7 +122,7 @@ If you do not need the complete player, these modules can still be useful on the
 |---|---|
 | SSD1306/SH1106 drawing, double-buffering, and I2C DMA driver | [Standalone driver](https://github.com/akasa828/STM32-HAL-SSD1306-SH1106) · `STM32F103/Core/OLED/` |
 | SPI Micro SD driver and FatFs `diskio` integration | [Standalone driver](https://github.com/akasa828/STM32-HAL-SPI-SD-FatFs) · `STM32F103/Core/Micro_SD/`, `STM32F103/Core/fatfs/` |
-| Img2Lcd frame merging and OVID packing/validation tools | `tools/` |
+| Direct image/GIF/video conversion, Img2Lcd frame merging, and OVID validation tools | `tools/` |
 | VS Code, CMake, and ST-Link build/debug configuration | `SD_Card_OVID_Player.code-workspace`, `STM32F103/.vscode/`, `STM32F103/CMakePresets.json` |
 
 These modules can serve as porting references, but other STM32 models or pin assignments will still require changes to HAL peripheral handles, GPIO configuration, and clocks.
@@ -138,11 +141,11 @@ This project is developed in VS Code with the [STM32CubeIDE for Visual Studio Co
 4. **Install the extension.** Install the [STM32 extension pack](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32-vscode-extension). On first launch, accept the project-discovery, tool-bundle download, and CMake configuration prompts. Wait until VS Code no longer reports a pending `Bundle` download in the lower-right corner.
 5. **Select a build type.** Choose `Debug` or `Release` in the STM32/CMake project panel. Use Debug for debugging and Release for normal flashing.
 6. **Connect and flash.** Follow the [wiring table](#wiring) to connect the OLED, Micro SD module, three buttons, and ST-Link. Press `F5`, then select `STM32: Build, flash and debug with ST-Link`. The extension builds the current preset and downloads its ELF automatically. When execution stops at `main`, press `F5` again to continue.
-7. **Prepare an OVID file.** Format the SD card as FAT or FAT32 and create a `function` folder in its root. Follow the [OVID creation guide](#create-ovid) to prepare the source material, generate frame data with Img2Lcd, and create a `.BIN` file with the merge script and `h2bin.py`.
+7. **Prepare an OVID file.** Format the SD card as FAT or FAT32 and create a `function` folder in its root. The recommended route is [OVID Converter v1.3.0-beta.1](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1), which accepts an image, image folder, GIF, or video directly. The existing Img2Lcd workflow remains available as an advanced option.
 8. **Insert the card and play.** Copy `DEMO.BIN` into `/function`, insert the card, and reset the board. After the three card-information pages finish, use Up and Down to select a file and press Confirm to play it. Press Confirm again during playback to return to the file list.
 
 > [!NOTE]
-> The initial setup needs an internet connection to download the declared STM32 tool bundles. `v1.2.2` remains stable, while the modular-driver build `v1.2.6` is provided first as a prerelease. Sample `.BIN` files for playback and error handling are available from Releases.
+> The initial setup needs an internet connection to download the declared STM32 tool bundles. `v1.2.2` remains the current stable firmware, `v1.2.6` is the modular-driver prerelease, and `v1.3.0-beta.1` is the newest test build with the converter. Sample `.BIN` files for playback and error handling are available from Releases.
 
 <a id="motivation"></a>
 
@@ -324,7 +327,25 @@ The firmware does not create `/function` automatically. On the first insertion, 
 
 ## 🎬 Creating OVID Files
 
-The complete process for preparing images, generating Img2Lcd data, merging frames, and building an OVID file is documented separately: [read the OVID creation tutorial](docs/OVID_TUTORIAL_EN.md).
+The recommended workflow is now:
+
+```text
+Download OVID Converter
+→ install or extract it
+→ select an image, image folder, GIF, or video
+→ preview and set the size/FPS
+→ generate an OVID .BIN
+```
+
+- [Download the installer](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.0-beta.1/OVID_Converter_Windows_x64_Setup_v1.3.0-beta.1.exe)
+- [Download the Windows x64 portable build](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.0-beta.1/OVID_Converter_Windows_x64_Portable_v1.3.0-beta.1.zip)
+
+The portable build runs after extraction. The installer provides English and Simplified Chinese UI, a Start Menu entry, and an optional desktop shortcut. Both distributions include their runtime, Pillow, and FFmpeg, so Python is not required.
+
+> [!WARNING]
+> The Windows packages are currently unsigned, so SmartScreen may report an unknown publisher. Download them only from this repository's Release page and verify them against `SHA256SUMS.txt` from the same Release.
+
+The original image preparation, IrfanView, Img2Lcd, frame-merging, and `h2bin.py` instructions remain available for users who want to inspect or control every intermediate step: [read the optional advanced tutorial](docs/OVID_TUTORIAL_EN.md).
 
 <a id="controls"></a>
 
@@ -382,7 +403,9 @@ The following documents are mainly intended for format inspection, display porti
 ├── ESP32/                    # Empty directory reserved for a future ESP32 port
 ├── docs/images/             # Hardware images and UI animations
 ├── tools/
-│   ├── h2bin.py             # OVID generation and validation
+│   ├── ovid_converter_gui.py # Material 3 desktop converter
+│   ├── media2ovid.py        # Direct image/GIF/video conversion core and CLI
+│   ├── h2bin.py             # Pack sampled headers and validate OVID
 │   └── merge_img2lcd.py     # Merge Img2Lcd frame C arrays
 └── SD_Card_OVID_Player.code-workspace
 ```
@@ -424,7 +447,7 @@ Before contributing, please read [CONTRIBUTING.md](CONTRIBUTING.md). For securit
 
 ## 📝 Latest Update
 
-The current stable firmware is **v1.2.2**; **v1.2.6** is a driver-modularization prerelease. It publishes the common OLED and SD + FatFs cores as standalone projects while retaining versioned embedded copies so a downloaded ZIP still builds offline.
+The current stable firmware is **v1.2.2**; **v1.2.6** is the driver-modularization prerelease; [**v1.3.0-beta.1**](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) is the newest test build with the Material 3 desktop converter. GitHub's `/releases/latest` link continues to point to the stable release.
 
 The complete version history is available in [CHANGELOG.md](CHANGELOG.md).
 

@@ -36,6 +36,9 @@
 > [!TIP]
 > 可直接用于测试播放和错误处理的示例 `.BIN` 文件已打包，仅在 [GitHub Releases](https://github.com/akasa828/SD_Card_OVID_Player/releases/latest) 中提供下载。
 
+> [!NOTE]
+> 新的 [OVID Converter v1.3.0-beta.1](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) 可以直接把图片、图片目录、GIF 或常见视频转换为 OVID `.BIN`，无需再手动生成中间 `.c/.h` 文件。这是首次公开测试版。
+
 SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频播放器。视频文件存放在 Micro SD 卡中，由 FatFs 负责文件访问，固件完成文件浏览和校验后，再按照文件头中的帧率将画面输出到 SSD1306 或 SH1106 单色 OLED。播放过程只需要三个按键，不依赖电脑或网络。这里使用的 OVID 可以理解为 OLED Video，它是一种给单色屏准备的帧数据格式。
 
 工程使用 CMake 构建，并提供面向 VS Code、STM32 官方扩展和 ST-Link 的配置；下载完整源码后，可以直接在 VS Code 中构建、刷写和调试。
@@ -95,7 +98,7 @@ SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频�
 
 - [ ] 受限于 STM32F103C8T6 当前的 Flash 和 RAM 容量，计划将播放器移植到 ESP32，并在资源更充足的平台上继续扩展功能。
 - [x] 将 SPI Micro SD + FatFs 文件系统驱动和 SSD1306/SH1106 OLED 驱动分别整理成可独立使用、方便移植的模块。
-- [ ] 简化从图片、GIF 或视频素材生成 OVID `.BIN` 文件的转换流程，减少对多个外部图形工具和中间文件的依赖。
+- [x] 简化从图片、GIF 或视频素材生成 OVID `.BIN` 文件的转换流程，新增可直接处理素材的 OVID Converter。
 
 <a id="features"></a>
 
@@ -121,7 +124,7 @@ SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频�
 |---|---|
 | SSD1306/SH1106 OLED 绘图、双缓冲与 I2C DMA 驱动 | [独立驱动项目](https://github.com/akasa828/STM32-HAL-SSD1306-SH1106) · `STM32F103/Core/OLED/` |
 | SPI Micro SD 驱动与 FatFs `diskio` 对接 | [独立驱动项目](https://github.com/akasa828/STM32-HAL-SPI-SD-FatFs) · `STM32F103/Core/Micro_SD/`、`STM32F103/Core/fatfs/` |
-| Img2Lcd 帧合并与 OVID 打包、校验工具 | `tools/` |
+| 图片/GIF/视频直转、Img2Lcd 帧合并与 OVID 校验工具 | `tools/` |
 | VS Code、CMake 与 ST-Link 构建调试配置 | `SD_Card_OVID_Player.code-workspace`、`STM32F103/.vscode/`、`STM32F103/CMakePresets.json` |
 
 这些代码可以作为移植参考，但换用其他 STM32 型号或引脚时，仍需调整 HAL 外设句柄、GPIO 和时钟配置。
@@ -140,11 +143,11 @@ SD Card OVID Player 是一个基于 STM32 HAL 的 STM32F103C8T6 离线帧视频�
 4. **安装扩展。** 安装上述 [STM32 扩展包](https://marketplace.visualstudio.com/items?itemName=stmicroelectronics.stm32-vscode-extension)。首次打开时，接受项目发现、工具 bundle 下载和 CMake 配置提示，直到右下角不再提示下载 `Bundle` 包。
 5. **选择构建类型。** 在 STM32/CMake 项目面板中选择 `Debug` 或 `Release`。调试建议选 Debug，正常烧录建议选 Release。
 6. **连接并刷写。** 按[接线表](#wiring)连接 OLED、Micro SD、三个按键和 ST-Link，然后按 `F5`，选择 `STM32: Build, flash and debug with ST-Link`。扩展会自动构建并下载当前 preset 的 ELF；程序停在 `main` 时再按一次 `F5` 即可继续运行。
-7. **准备 OVID 文件。** 把 SD 卡格式化为 FAT 或 FAT32，在根目录创建 `function` 文件夹。按照[生成 OVID 文件](#create-ovid)中的流程准备素材、用 Img2Lcd 取模，再通过仓库里的合并脚本和 `h2bin.py` 生成 `.BIN`。
+7. **准备 OVID 文件。** 把 SD 卡格式化为 FAT 或 FAT32，在根目录创建 `function` 文件夹。推荐下载 [OVID Converter v1.3.0-beta.1](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1)，直接选择图片、图片目录、GIF 或视频并生成 `.BIN`；原有 Img2Lcd 流程仍可作为高级方式使用。
 8. **插卡并播放。** 将 `DEMO.BIN` 放入 `/function`，插卡并复位。三张卡信息页结束后，用上下键选择文件，按确认键播放；播放中再次按确认键返回列表。
 
 > [!NOTE]
-> 首次配置需要联网下载项目声明的 STM32 工具 bundles。`v1.2.2` 仍是稳定版，驱动模块化版本 `v1.2.6` 先以 prerelease 提供；用于测试播放和错误处理的示例 `.BIN` 文件可在 Releases 中下载。
+> 首次配置需要联网下载项目声明的 STM32 工具 bundles。`v1.2.2` 仍是当前稳定固件，`v1.2.6` 是驱动模块化预发布版，`v1.3.0-beta.1` 是包含新转换器的最新测试版；用于测试播放和错误处理的示例 `.BIN` 文件可在 Releases 中下载。
 
 <a id="motivation"></a>
 
@@ -328,7 +331,25 @@ SD 卡根目录/
 
 ## 🎬 OVID 制作教程
 
-完整的图片准备、Img2Lcd 取模、帧合并和 OVID 生成步骤已整理到独立文档：[查看 OVID 图文制作教程](docs/OVID_TUTORIAL.md)。
+推荐流程已经缩短为：
+
+```text
+下载 OVID Converter
+→ 安装或解压
+→ 选择图片、图片目录、GIF 或视频
+→ 预览并设置尺寸/FPS
+→ 生成 OVID .BIN
+```
+
+- [下载安装版](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.0-beta.1/OVID_Converter_Windows_x64_Setup_v1.3.0-beta.1.exe)
+- [下载 Windows x64 便携版](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.0-beta.1/OVID_Converter_Windows_x64_Portable_v1.3.0-beta.1.zip)
+
+便携版解压即可运行，安装版提供中英文安装界面、开始菜单和可选桌面快捷方式；两者都已经包含运行时、Pillow 和 FFmpeg，不要求用户预先安装 Python。
+
+> [!WARNING]
+> 当前 Windows 程序没有代码签名证书，SmartScreen 可能显示“未知发布者”。请只从本仓库 Release 下载，并用同一页面中的 `SHA256SUMS.txt` 校验文件。
+
+原有的图片准备、IrfanView、Img2Lcd 取模、帧合并和 `h2bin.py` 流程仍完整保留，适合需要检查或手动控制每一步数据的人：[查看可选的高级制作教程](docs/OVID_TUTORIAL.md)。
 
 <a id="controls"></a>
 
@@ -386,7 +407,9 @@ SD 卡根目录/
 ├── ESP32/                    # 后续 ESP32 移植的空目录
 ├── docs/images/             # 预留的实机图片与 UI 动图位置
 ├── tools/
-│   ├── h2bin.py             # OVID 生成与校验
+│   ├── ovid_converter_gui.py # Material 3 桌面转换器
+│   ├── media2ovid.py        # 图片/GIF/视频直转核心与命令行
+│   ├── h2bin.py             # 取模头文件打包与 OVID 校验
 │   └── merge_img2lcd.py     # 合并 Img2Lcd 单帧 C 数组
 └── SD_Card_OVID_Player.code-workspace
 ```
@@ -428,7 +451,7 @@ SD 卡根目录/
 
 ## 📝 最近一次更新
 
-当前稳定固件版本为 **v1.2.2**；**v1.2.6** 是驱动模块化预发布版。它把 OLED 与 SD + FatFs 的公共核心拆成独立项目，同时在播放器中保留带来源记录的内置副本，下载 ZIP 后仍可离线构建。
+当前稳定固件版本为 **v1.2.2**；**v1.2.6** 是驱动模块化预发布版；[**v1.3.0-beta.1**](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) 是包含 Material 3 桌面转换器的最新测试版。GitHub 的 `/releases/latest` 仍然指向稳定版本。
 
 完整的版本记录放在 [CHANGELOG.md](CHANGELOG.md)
 

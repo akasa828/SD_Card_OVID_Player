@@ -8,6 +8,9 @@
 
 [← Back to the project README](../README_EN.md)
 
+> [!NOTE]
+> This is the preserved optional advanced workflow. Most users can download [OVID Converter v1.3.0-beta.1](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) and convert an image, image folder, GIF, or video directly into an OVID `.BIN`. The original instructions below remain unchanged for users who want to inspect and control each intermediate step.
+
 > The steps below use `Bad Apple.mp4` as an example.
 
 Putting an MP4 decoder directly on an `F103C8T6` is neither practical nor a good fit for the chip, so the preparation takes a few steps. Still, getting the video to play at all is already pretty satisfying.
@@ -142,16 +145,16 @@ python tools/h2bin.py info OUTPUT.BIN
 After confirming that the format, dimensions, frame count, FPS, and CRC results are correct, copy the `.BIN` file to the SD card's `/function` directory.
 
 <details>
-<summary><strong>Optional: Generate Directly from an Image Folder or GIF</strong></summary>
+<summary><strong>Optional: Convert Directly from the Source CLI</strong></summary>
 
-`h2bin.py` still includes a shortcut for reading images and GIF files directly. This route requires Pillow:
+Without starting the GUI, you can call the same conversion core used by the desktop app. It accepts images, image folders, GIFs, and videos:
 
 ```bash
-python -m pip install Pillow
-python tools/h2bin.py from-images frames/ OUTPUT.BIN -W 128 -H 64 --fps 15
+python -m pip install -r tools/requirements-converter.txt
+python tools/media2ovid.py INPUT.mp4 OUTPUT.BIN -W 128 -H 64 --fps 15
 ```
 
-It is convenient for quick tests. The Img2Lcd workflow above makes it easier to inspect the sampling result of each frame according to the scan mode selected in the graphics tool.
+This route is useful for automation and batch processing. The Img2Lcd workflow above makes it easier to inspect the sampling result of each frame according to the scan mode selected in the graphics tool.
 
 </details>
 

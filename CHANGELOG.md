@@ -4,17 +4,39 @@
 
 ## Unreleased
 
-### Repository
+## v1.3.0-beta.1 OVID 转换器预发布（2026-08-22）
+
+### OVID Converter
+
+- 新增 Material 3 桌面转换器，可直接将图片、图片目录、GIF 和常见视频生成 OVID v2 `.BIN`。
+- 默认使用 128×64、15 FPS、保持比例完整显示、黑色补边和 Floyd–Steinberg 黑白抖动。
+- 支持 `contain`、`cover`、`stretch`、固定阈值、反色、透明区域背景、递归目录和输出覆盖选项。
+- 增加 OLED 像素预览、前后帧、预览播放、进度、预计文件大小和后台取消；长视频通过 FFmpeg 逐帧解码，不整段载入内存。
+- 输出先写入 `.part` 临时文件，成功后原子替换；失败或取消时自动清理。
+- 抽取 OVID v2、CRC16 和 CRC32 公共实现，`h2bin.py` 原有命令继续兼容。
+
+### Windows distribution
+
+- 新增 Windows x64 便携 ZIP，包含 Flet/Flutter 运行时、Pillow、imageio-ffmpeg 和 FFmpeg，解压后无需 Python 即可运行。
+- 新增 Inno Setup 安装版，提供中英文界面、自定义安装目录、开始菜单、可选桌面快捷方式和卸载入口。
+- 未关联通用 `.BIN` 扩展名；用户生成文件和设置不会随卸载删除。
+- 当前安装包未签名，README 和 Release 中补充 SmartScreen 提示，并随附件提供统一 `SHA256SUMS.txt` 和第三方许可证说明。
+
+### Firmware and release
+
+- 应用版本同步更新为 `1.3.0-beta.1`，诊断页显示 `FW V1.3.0-b1`。
+- Release 工作流拆分为 Ubuntu 固件构建、Windows 转换器构建和统一附件发布三个阶段。
+- Release 同时发布 STM32F103C8T6 ELF/BIN、转换器便携版、安装版、示例视频包和统一 SHA-256 校验文件。
+- `v1.2.2` 继续作为稳定版，`v1.2.6` 保留为驱动模块化预发布版，本版本标记为 Pre-release。
+
+### Repository, testing and documentation
 
 - Reorganized the public Git history into focused English Conventional Commits while preserving the file tree of every published version tag.
 - Fixed the root VS Code workspace so clangd resolves any installed STM32 GNU tool bundle version dynamically.
 - Added bilingual contribution, security, Issue, and Pull Request guidance.
-
-### Testing and CI
-
-- Added standard-library regression tests for OVID packing, CRC validation, popup fixtures, Img2Lcd parsing, natural ordering, and frame-size errors.
-- Expanded GitHub Actions to build every supported SSD1306/SH1106 configuration in both Debug and Release.
-- Added Conventional Commit validation and automatic asset attachment for published Releases.
+- Added regression coverage for direct image, directory, GIF, and streamed video conversion, page-major packing, cancellation, and atomic output.
+- Expanded GitHub Actions to build every supported SSD1306/SH1106 configuration in both Debug and Release and run the complete Python test suite.
+- Updated the Chinese and English README with converter downloads and usage; the IrfanView/Img2Lcd workflow remains as an optional advanced guide.
 
 ## v1.2.6 驱动模块化预发布（2026-08-21）
 
