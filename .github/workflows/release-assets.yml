@@ -13,17 +13,19 @@ on:
 permissions:
   contents: write
 
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  SAMPLE_ASSET_TAG: v1.2.2
+  SAMPLE_ASSET_NAME: SD_Card_OVID_Player_Sample_Videos.zip
+
 jobs:
-  assets:
+  firmware:
+    name: Build STM32F103C8T6 firmware
     runs-on: ubuntu-latest
-    env:
-      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
-      SAMPLE_ASSET_TAG: v1.2.2
-      SAMPLE_ASSET_NAME: SD_Card_OVID_Player_Sample_Videos.zip
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Validate release tag
         shell: bash
@@ -34,31 +36,129 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi
 
-      - name: Build release firmware
+      - name: Configure release firmware
         run: >-
           cmake -S STM32F103 -B STM32F103/build/release-assets -G Ninja
           -DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake
           -DCMAKE_BUILD_TYPE=Release
 
-      - run: cmake --build STM32F103/build/release-assets --parallel
+      - name: Build release firmware
+        run: cmake --build STM32F103/build/release-assets --parallel
 
-      - name: Package release assets
+      - name: Collect firmware assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp STM32F103/build/release-assets/SD_Card_OVID_Player.elf \
+            "dist/SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.elf"
+          cp STM32F103/build/release-assets/SD_Card_OVID_Player.bin \
+            "dist/SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.bin"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-assets
+          path: dist/*
+          if-no-files-found: error
+
+  converter:
+    name: Build Windows OVID Converter
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: tools/requirements-converter-build.txt
+
+      - name: Install converter build dependencies
+        shell: pwsh
+        run: python -m pip install -r tools/requirements-converter-build.txt
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Run converter tests
+        shell: pwsh
+        run: python -m unittest discover -s tools/tests -v
+
+      - name: Resolve Windows file version
+        id: version
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG.TrimStart('v')
+          if ($version -match '^(\d+)\.(\d+)\.(\d+)-beta\.(\d+)$') {
+            $windowsVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).$($Matches[4])"
+          } elseif ($version -match '^(\d+)\.(\d+)\.(\d+)$') {
+            $windowsVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+          } else {
+            throw "Unsupported converter release tag: $env:RELEASE_TAG"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "windows_version=$windowsVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Build portable ZIP and installer
+        shell: pwsh
+        run: >-
+          ./tools/package_converter.ps1
+          -Version "${{ steps.version.outputs.version }}"
+          -WindowsVersion "${{ steps.version.outputs.windows_version }}"
+
+      - name: Verify converter assets
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $portable = "tools/dist/OVID_Converter_Windows_x64_Portable_v$version.zip"
+          $setup = "tools/dist/OVID_Converter_Windows_x64_Setup_v$version.exe"
+          if (-not (Test-Path -LiteralPath $portable)) { throw "Missing $portable" }
+          if (-not (Test-Path -LiteralPath $setup)) { throw "Missing $setup" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: converter-assets
+          path: |
+            tools/dist/OVID_Converter_Windows_x64_Portable_*.zip
+            tools/dist/OVID_Converter_Windows_x64_Setup_*.exe
+          if-no-files-found: error
+
+  publish:
+    name: Attach release assets
+    runs-on: ubuntu-latest
+    needs: [firmware, converter]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Download sample videos
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
-          cp STM32F103/build/release-assets/SD_Card_OVID_Player.elf "dist/SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.elf"
-          cp STM32F103/build/release-assets/SD_Card_OVID_Player.bin "dist/SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.bin"
           gh release download "$SAMPLE_ASSET_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "$SAMPLE_ASSET_NAME" \
             --dir dist
+
+      - name: Generate unified checksums
+        shell: bash
+        run: |
+          set -euo pipefail
           (
             cd dist
-            sha256sum "SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.elf" \
+            sha256sum \
+              "SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.elf" \
               "SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.bin" \
+              "OVID_Converter_Windows_x64_Portable_${RELEASE_TAG}.zip" \
+              "OVID_Converter_Windows_x64_Setup_${RELEASE_TAG}.exe" \
               "$SAMPLE_ASSET_NAME" > SHA256SUMS.txt
           )
 
@@ -66,10 +166,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            "dist/SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.elf" \
-            "dist/SD_Card_OVID_Player_STM32F103C8T6_${RELEASE_TAG}.bin" \
-            "dist/$SAMPLE_ASSET_NAME" \
-            dist/SHA256SUMS.txt \
-            --clobber
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber
