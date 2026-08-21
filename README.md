@@ -422,6 +422,8 @@ SD 卡根目录/
 
 欢迎针对屏幕适配、SD 兼容性、OVID 工具和 UI 行为提交 [Issue](https://github.com/akasa828/SD_Card_OVID_Player/issues) 或 Pull Request。
 
+提交前请先阅读[贡献指南](CONTRIBUTING.md)；涉及不应公开的安全细节时，请按照[安全策略](SECURITY.md)进行报告。
+
 <a id="latest-update"></a>
 
 ## 📝 最近一次更新

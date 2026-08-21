@@ -4,7 +4,17 @@
 
 ## Unreleased
 
-暂无。
+### Repository
+
+- Reorganized the public Git history into focused English Conventional Commits while preserving the file tree of every published version tag.
+- Fixed the root VS Code workspace so clangd resolves any installed STM32 GNU tool bundle version dynamically.
+- Added bilingual contribution, security, Issue, and Pull Request guidance.
+
+### Testing and CI
+
+- Added standard-library regression tests for OVID packing, CRC validation, popup fixtures, Img2Lcd parsing, natural ordering, and frame-size errors.
+- Expanded GitHub Actions to build every supported SSD1306/SH1106 configuration in both Debug and Release.
+- Added Conventional Commit validation and automatic asset attachment for published Releases.
 
 ## v1.2.6 驱动模块化预发布（2026-08-21）
 

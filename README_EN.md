@@ -418,6 +418,8 @@ A 30-minute continuous playback run, real card hot removal, and signal integrity
 
 Issues and pull requests about display porting, SD compatibility, OVID tools, or UI behavior are welcome through [GitHub Issues](https://github.com/akasa828/SD_Card_OVID_Player/issues).
 
+Before contributing, please read [CONTRIBUTING.md](CONTRIBUTING.md). For security-sensitive reports, follow the [security policy](SECURITY.md).
+
 <a id="latest-update"></a>
 
 ## 📝 Latest Update
