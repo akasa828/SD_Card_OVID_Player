@@ -46,9 +46,11 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     Core/OLED/oled.cpp
+    Core/Port/oled_stm32_hal.c
     Core/OLED/UI.c
     Core/OLED/test.c
     Core/Micro_SD/SD_reader.c
+    Core/Port/sd_stm32_hal.c
     Core/Micro_SD/sd_debug.c
     Core/function/function.c
     Core/function/app_ui.c
@@ -67,6 +69,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Micro_SD
     Core/function
     Core/fatfs
+    Core/Port
 )
 
 # Add project symbols (macros)
@@ -100,3 +103,9 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 
     # Add user defined libraries
 )
+
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O binary
+            $<TARGET_FILE:${CMAKE_PROJECT_NAME}>
+            $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/${CMAKE_PROJECT_NAME}.bin
+    COMMENT "Generating ${CMAKE_PROJECT_NAME}.bin")

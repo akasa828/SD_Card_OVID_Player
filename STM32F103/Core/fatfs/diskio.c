@@ -5,11 +5,21 @@
 /* FatFs 调用 disk_* → 这里转调 SD_Read/Write_Block_Card 等。            */
 /*-----------------------------------------------------------------------*/
 
+#include <stddef.h>
 #include "ff.h"          /* FatFs 基础类型定义 */
 #include "diskio.h"      /* FatFs 磁盘 I/O 接口声明 */
 #include "SD_reader.h"   /* 本工程 SD 驱动：g_sd_card / SD_*_Card / SD_OK */
+#include "sd_fatfs.h"
 
 #define DEV_SD   0       /* 唯一物理盘号：SD 卡 */
+static SD_Card *s_card = &g_sd_card;
+
+int SD_FatFs_Attach(SD_Card *card)
+{
+    if (card == NULL) return SD_PARAM_ERR;
+    s_card = card;
+    return SD_OK;
+}
 
 /*-----------------------------------------------------------------------*/
 /* Get Drive Status                                                      */
@@ -17,7 +27,7 @@
 DSTATUS disk_status (BYTE pdrv)
 {
     if (pdrv != DEV_SD) return STA_NOINIT;
-    return g_sd_card.info.initialized ? 0 : STA_NOINIT;
+    return s_card->info.initialized ? 0 : STA_NOINIT;
 }
 
 /*-----------------------------------------------------------------------*/
@@ -27,8 +37,8 @@ DSTATUS disk_initialize (BYTE pdrv)
 {
     if (pdrv != DEV_SD) return STA_NOINIT;
     /* 已初始化则直接返回就绪，避免重复握手 */
-    if (g_sd_card.info.initialized) return 0;
-    return (SD_Init_Card(&g_sd_card) > 0) ? 0 : STA_NOINIT;
+    if (s_card->info.initialized) return 0;
+    return (SD_Init_Card(s_card) > 0) ? 0 : STA_NOINIT;
 }
 
 /*-----------------------------------------------------------------------*/
@@ -37,12 +47,12 @@ DSTATUS disk_initialize (BYTE pdrv)
 DRESULT disk_read (BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
 {
     if (pdrv != DEV_SD) return RES_PARERR;
-    if (!g_sd_card.info.initialized) return RES_NOTRDY;
+    if (!s_card->info.initialized) return RES_NOTRDY;
     if (count == 0U) return RES_PARERR;
 
     int r = (count == 1U)
-          ? SD_Read_Block_Card(&g_sd_card, (uint32_t)sector, buff)
-          : SD_Read_Multi_Block_Card(&g_sd_card, (uint32_t)sector, buff, (uint32_t)count);
+          ? SD_Read_Block_Card(s_card, (uint32_t)sector, buff)
+          : SD_Read_Multi_Block_Card(s_card, (uint32_t)sector, buff, (uint32_t)count);
     return (r == SD_OK) ? RES_OK : RES_ERROR;
 }
 
@@ -53,12 +63,12 @@ DRESULT disk_read (BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
 DRESULT disk_write (BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
 {
     if (pdrv != DEV_SD) return RES_PARERR;
-    if (!g_sd_card.info.initialized) return RES_NOTRDY;
+    if (!s_card->info.initialized) return RES_NOTRDY;
     if (count == 0U) return RES_PARERR;
 
     int r = (count == 1U)
-          ? SD_Write_Block_Card(&g_sd_card, (uint32_t)sector, buff)
-          : SD_Write_Multi_Block_Card(&g_sd_card, (uint32_t)sector, buff, (uint32_t)count);
+          ? SD_Write_Block_Card(s_card, (uint32_t)sector, buff)
+          : SD_Write_Multi_Block_Card(s_card, (uint32_t)sector, buff, (uint32_t)count);
     return (r == SD_OK) ? RES_OK : RES_ERROR;
 }
 #endif
@@ -69,13 +79,13 @@ DRESULT disk_write (BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
 DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void *buff)
 {
     if (pdrv != DEV_SD) return RES_PARERR;
-    if (!g_sd_card.info.initialized) return RES_NOTRDY;
+    if (!s_card->info.initialized) return RES_NOTRDY;
 
     switch (cmd) {
     case CTRL_SYNC:            /* 本驱动写操作为同步阻塞，无挂起缓存 */
         return RES_OK;
     case GET_SECTOR_COUNT:     /* 总扇区数（用于 f_mkfs/f_getfree 计算） */
-        *(LBA_t *)buff = (LBA_t)g_sd_card.info.block_count;
+        *(LBA_t *)buff = (LBA_t)s_card->info.block_count;
         return RES_OK;
     case GET_SECTOR_SIZE:      /* 固定 512B（FF_MIN_SS==FF_MAX_SS 时其实不调用） */
         *(WORD *)buff = SD_BLOCK_SIZE;
@@ -99,4 +109,3 @@ DWORD get_fattime (void)
          | ((DWORD)1 << 21)
          | ((DWORD)1 << 16);
 }
-

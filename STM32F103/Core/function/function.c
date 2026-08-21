@@ -452,9 +452,8 @@ static uint8_t probe_card(uint8_t *misses)
 
 static uint32_t card_spi_hz(void)
 {
-    if (g_sd_card.io.get_bus_clk == NULL || g_sd_card.io.get_prescaler == NULL) return 0U;
-    uint32_t divider = 2UL << (g_sd_card.io.get_prescaler() >> 3U);
-    return divider == 0U ? 0U : g_sd_card.io.get_bus_clk() / divider;
+    if (g_sd_card.io.get_sck_hz == NULL) return 0U;
+    return g_sd_card.io.get_sck_hz(g_sd_card.io.context);
 }
 
 static uint8_t diagnostic_key_mask(void)

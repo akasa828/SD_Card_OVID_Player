@@ -4,25 +4,22 @@
   * @author  riochihao
   * @brief   SD SPI 通用驱动实现 —— 硬件解耦 + 多实例 + CRC 校验 + 自适应时钟
   * @note    所有硬件操作通过 SD_IO 回调抽象，移植只需实现 io 函数指针。
-  *          默认后端为 STM32 HAL（hspi1 + PB0 BSRR CS）。
+  *          平台后端由 SD_Card_BindIO() 在运行时显式注入。
   ******************************************************************************
   */
 #include <string.h>
 #include <stdio.h>
 #include "stdint.h"
-#include "main.h"
-#include "spi.h"
-#include "oled.hpp"
 #include "SD_reader.h"
 
 /*
  * 内部 IO 快捷宏 + static 辅助函数
  * （全部仅 SD_reader.c 内可见，对外开放的接口见 SD_Init_Card / SD_Read_Block_Card 等）
  */
-#define SD_IO_BYTE(c, tx)         ((c)->io.spi_byte(tx))
-#define SD_IO_CS_LOW(c)           ((c)->io.cs_low())
-#define SD_IO_CS_HIGH(c)          ((c)->io.cs_high())
-#define SD_IO_TICK(c)             ((c)->io.tick_ms())
+#define SD_IO_BYTE(c, tx)         ((c)->io.spi_byte((c)->io.context, (tx)))
+#define SD_IO_CS_LOW(c)           ((c)->io.cs_low((c)->io.context))
+#define SD_IO_CS_HIGH(c)          ((c)->io.cs_high((c)->io.context))
+#define SD_IO_TICK(c)             ((c)->io.tick_ms((c)->io.context))
 
 /* 块数→MB 换算：block_count * 512 / (1024*1024) */
 #define SD_BLOCKS_PER_MB  2048U
@@ -111,11 +108,12 @@ static uint32_t _sd_to_addr(const SD_Card *card, uint32_t block_addr)
 static int _sd_lock(SD_Card *card)
 {
     int ok;
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    uint32_t state = card->io.enter_critical != NULL
+        ? card->io.enter_critical(card->io.context) : 0U;
     if (card->busy) { ok = SD_BUSY; }
     else            { card->busy = 1U; ok = SD_OK; }
-    if (!primask) __enable_irq();   /* 仅当进入前中断是开的才恢复，避免误开中断 */
+    if (card->io.exit_critical != NULL)
+        card->io.exit_critical(card->io.context, state);
     return ok;
 }
 
@@ -132,9 +130,7 @@ static void _sd_unlock(SD_Card *card)
  */
 static uint8_t _sd_detect_speed(SD_Card *card)
 {
-    uint32_t bus_clk = card->io.get_bus_clk();
-    uint32_t ratio   = 2UL << (card->io.get_prescaler() >> 3U);
-    uint32_t sck     = bus_clk / ratio;
+    uint32_t sck = card->io.get_sck_hz(card->io.context);
     if (sck <= 400000UL)
     {
         card->info.speed = SD_SPI_SPEED_LOW;
@@ -199,98 +195,21 @@ uint16_t SD_CRC16(const uint8_t *data, uint16_t len)
     return crc;
 }
 
-/*====================================================================
-  STM32 HAL 默认 IO 后端（hspi1 + PB0 BSRR CS）
-  ====================================================================*/
-
-/** @brief STM32 HAL 单字节 SPI 全双工交换（轮询） */
-static uint8_t _stm32_spi_byte(uint8_t tx)
-{
-    uint8_t rx = 0xFF;
-    if (HAL_SPI_TransmitReceive(&hspi1, &tx, &rx, 1U, SD_SPI_TIMEOUT) != HAL_OK)
-        return 0xFF;
-    return rx;
-}
-
-/** @brief STM32 块接收（轮询，整块一次性传输）
- *  @note  用 DMA 实测返回错位/损坏数据，故走轮询。但不再逐字节调用 HAL（1024 次/帧开销大），
- *         改为一次 HAL_SPI_TransmitReceive 传整块——同一可靠路径、调用开销几乎归零，大幅提速。
- *         先把 rx 填 0xFF 作发送源（读阶段 SD 忽略 MOSI）；HAL 字节循环里先读 tx[i] 再写 rx[i]，
- *         同缓冲同下标安全。 */
-static int _stm32_recv_dma(uint8_t *rx, uint16_t len)
-{
-    if (rx == NULL || len == 0U) return SD_PARAM_ERR;
-    (void)memset(rx, 0xFF, len);
-    uint32_t to = (uint32_t)len / 2U + 100U;   /* 充裕超时：低速档 512B 约 15ms，留足裕量 */
-    if (HAL_SPI_TransmitReceive(&hspi1, rx, rx, len, to) != HAL_OK) return SD_ERR;
-    return SD_OK;
-}
-
-/** @brief STM32 块发送（轮询，整块一次性传输）——同上，一次 HAL 调用 */
-static int _stm32_send_dma(const uint8_t *tx, uint16_t len)
-{
-    if (tx == NULL || len == 0U) return SD_PARAM_ERR;
-    uint32_t to = (uint32_t)len / 2U + 100U;
-    if (HAL_SPI_Transmit(&hspi1, (uint8_t *)tx, len, to) != HAL_OK) return SD_ERR;
-    return SD_OK;
-}
-
-/** @brief CS 拉低（PB0 BSRR 写 1 到 BR16） */
-static void _stm32_cs_low(void)  { SD_CS_LOW(); }
-
-/** @brief CS 拉高 + 8 个补时钟（SD 规范要求释放后补时钟完成状态切换） */
-static void _stm32_cs_high(void) { SD_CS_HIGH(); (void)_stm32_spi_byte(0xFFU); }
-
-/** @brief 设 SPI prescaler 并重初始化外设，失败时回退原值 */
-static int _stm32_set_speed(uint32_t prescaler)
-{
-    /* HAL_SPI_Init 会先 __HAL_SPI_DISABLE 再重写 CR1/CR2，只有总线空闲时才安全。
-     * 若在一次 DMA 块传输进行中被调用，会把外设连同活动 DMA 一起拆掉、导致卡失步。 */
-    if (HAL_SPI_GetState(&hspi1) != HAL_SPI_STATE_READY) return SD_ERR;
-    uint32_t prev = hspi1.Init.BaudRatePrescaler;
-    hspi1.Init.BaudRatePrescaler = prescaler;
-    if (HAL_SPI_Init(&hspi1) != HAL_OK)
-    {
-        hspi1.Init.BaudRatePrescaler = prev;
-        (void)HAL_SPI_Init(&hspi1);
-        return SD_ERR;
-    }
-    return SD_OK;
-}
-
-static uint32_t _stm32_get_prescaler(void) { return hspi1.Init.BaudRatePrescaler; }
-static uint32_t _stm32_get_bus_clk(void)   { return HAL_RCC_GetPCLK2Freq(); }
-static uint32_t _stm32_tick_ms(void)       { return HAL_GetTick(); }
-
-/** @brief 默认 STM32 HAL IO 实例，所有回调绑定 hspi1 + PB0 */
-static const SD_IO g_default_io = {
-    .spi_byte      = _stm32_spi_byte,
-    .recv_dma      = _stm32_recv_dma,
-    .send_dma      = _stm32_send_dma,
-    .cs_low        = _stm32_cs_low,
-    .cs_high       = _stm32_cs_high,
-    .set_speed     = _stm32_set_speed,
-    .get_prescaler = _stm32_get_prescaler,
-    .get_bus_clk   = _stm32_get_bus_clk,
-    .tick_ms       = _stm32_tick_ms,
-    .crc_check     = 1U,
-};
-
-/** @brief 默认全局实例——向后兼容 API（SD_Init / SD_Read_Block 等）均用此句柄 */
+/** @brief 默认全局实例；硬件适配层在应用启动时显式绑定。 */
 SD_Card g_sd_card = { .io = {0}, .info = {0} };
 
-/**
- * @brief 用 STM32 HAL 默认回调填充 SD_IO
- * @param card SD 卡句柄（不可为 NULL）
- * @note  SD_Init_Card 内部若检测到 io 未绑定会自动调用，多数情况下用户无需手动调用
- */
-void SD_Init_Default_IO(SD_Card *card)
+int SD_Card_BindIO(SD_Card *card, const SD_IO *io)
 {
-    if (card == NULL) return;
-    card->io = g_default_io;
+    if (card == NULL || io == NULL || io->spi_byte == NULL ||
+        io->receive == NULL || io->send == NULL || io->cs_low == NULL ||
+        io->cs_high == NULL || io->set_speed == NULL ||
+        io->get_sck_hz == NULL || io->tick_ms == NULL) return SD_PARAM_ERR;
+    card->io = *io;
     (void)memset(&card->info, 0x00, sizeof(card->info));
     card->info.type  = SD_TYPE_NONE;
     card->info.speed = SD_SPI_SPEED_NULL;
+    card->busy = 0U;
+    return SD_OK;
 }
 
 //====================================================================
@@ -307,8 +226,7 @@ int SD_Set_Speed_Card(SD_Card *card, uint8_t speed)
     if (card == NULL) return SD_PARAM_ERR;
     if (speed == card->info.speed) return SD_OK;
     if (speed == SD_SPI_SPEED_NULL) return SD_PARAM_ERR;
-    uint32_t ps = (speed == SD_SPI_SPEED_HIGH) ? SD_SPI_PRESCALER_HIGH : SD_SPI_PRESCALER_LOW;
-    if (card->io.set_speed(ps) != SD_OK) return SD_ERR;
+    if (card->io.set_speed(card->io.context, speed) != SD_OK) return SD_ERR;
     card->info.speed = speed;
     return SD_OK;
 }
@@ -323,12 +241,10 @@ int SD_Set_Speed_Card(SD_Card *card, uint8_t speed)
 int SD_Init_Card(SD_Card *card)
 {
     if (card == NULL) return SD_PARAM_ERR;
-    if (card->io.spi_byte == NULL) SD_Init_Default_IO(card);
-
     /* 校验所有必需回调，避免部分填充的 SD_IO 触发 NULL 函数指针调用 → HardFault */
-    if (card->io.spi_byte == NULL || card->io.recv_dma == NULL || card->io.send_dma == NULL ||
+    if (card->io.spi_byte == NULL || card->io.receive == NULL || card->io.send == NULL ||
         card->io.cs_low == NULL   || card->io.cs_high == NULL  || card->io.set_speed == NULL ||
-        card->io.get_prescaler == NULL || card->io.get_bus_clk == NULL || card->io.tick_ms == NULL)
+        card->io.get_sck_hz == NULL || card->io.tick_ms == NULL)
         return SD_PARAM_ERR;
 
     /* 先置未就绪并清零，握手成功后再原子发布，避免并发读到 initialized=1 而 block_addr 尚为 0 */
@@ -510,7 +426,7 @@ int SD_Read_Block_Card(SD_Card *card, uint32_t block_addr, uint8_t *buf)
             SD_IO_CS_HIGH(card);
             result = SD_TIMEOUT;
         }
-        else if (card->io.recv_dma(buf, SD_BLOCK_SIZE) != SD_OK)
+        else if (card->io.receive(card->io.context, buf, SD_BLOCK_SIZE) != SD_OK)
         {
             /* 超时时 DMA 已 Abort，补几个时钟让卡结束数据相再抬 CS，避免下次命令失步 */
             for (uint8_t k = 0; k < 2U; ++k) (void)SD_IO_BYTE(card, 0xFFU);
@@ -554,7 +470,7 @@ int SD_Write_Block_Card(SD_Card *card, uint32_t block_addr, const uint8_t *buf)
     { SD_IO_CS_HIGH(card); _sd_unlock(card); return SD_ERR; }
     (void)SD_IO_BYTE(card, 0xFFU);
     (void)SD_IO_BYTE(card, SD_TOKEN_START_BLOCK);
-    if (card->io.send_dma(buf, SD_BLOCK_SIZE) != SD_OK)
+    if (card->io.send(card->io.context, buf, SD_BLOCK_SIZE) != SD_OK)
     { SD_IO_CS_HIGH(card); _sd_unlock(card); return SD_ERR; }
     /* 仅在 crc_check 开启时算 CRC，否则发 0xFFFF 占位（SPI 模式卡默认不校验写 CRC） */
     uint16_t crc = card->io.crc_check ? SD_CRC16(buf, SD_BLOCK_SIZE) : 0xFFFFU;
@@ -586,7 +502,7 @@ int SD_Read_Multi_Block_Card(SD_Card *card, uint32_t block_addr, uint8_t *buf, u
     for (uint32_t i = 0; i < count; ++i)
     {
         if (_sd_wait_token(card, SD_TOKEN_START_BLOCK, 200U) != SD_OK) { result = SD_TIMEOUT; break; }
-        if (card->io.recv_dma(p, SD_BLOCK_SIZE) != SD_OK) { result = SD_ERR; break; }
+        if (card->io.receive(card->io.context, p, SD_BLOCK_SIZE) != SD_OK) { result = SD_ERR; break; }
         uint8_t crc_h = SD_IO_BYTE(card, 0xFFU), crc_l = SD_IO_BYTE(card, 0xFFU);
         if (crc_en && ((((uint16_t)crc_h << 8) | crc_l) != SD_CRC16(p, SD_BLOCK_SIZE)))
         { result = SD_CRC_ERR; break; }
@@ -624,7 +540,7 @@ int SD_Write_Multi_Block_Card(SD_Card *card, uint32_t block_addr, const uint8_t 
     {
         if (_sd_wait_ready(card, 500U) != SD_OK) { result = SD_TIMEOUT; break; }
         (void)SD_IO_BYTE(card, SD_TOKEN_START_MULTI);
-        if (card->io.send_dma(p, SD_BLOCK_SIZE) != SD_OK) { result = SD_ERR; break; }
+        if (card->io.send(card->io.context, p, SD_BLOCK_SIZE) != SD_OK) { result = SD_ERR; break; }
         uint16_t crc = crc_en ? SD_CRC16(p, SD_BLOCK_SIZE) : 0xFFFFU;
         (void)SD_IO_BYTE(card, (uint8_t)(crc >> 8));
         (void)SD_IO_BYTE(card, (uint8_t)crc);
@@ -754,34 +670,16 @@ uint8_t SD_Get_Type_Card(const SD_Card *card)
 }
 
 //====================================================================
-//  SD_DeInit_Card -- 反初始化（**平台依赖**）
+//  SD_DeInit_Card -- 通过端口层释放硬件并清除卡状态
 //====================================================================
-//  **平台依赖**：直接调用 STM32 HAL API（HAL_SPI_DeInit、HAL_GPIO_Init）。
-//  若使用非 STM32 默认 IO 后端，需自行实现对应的 DeInit 逻辑。
-//  关闭 SPI 外设时钟，CS(PB0) 设推挽高电平防浮空漏电，重置 card->info。
 void SD_DeInit_Card(SD_Card *card)
 {
     if (card == NULL) return;
-
-    /* ---- 平台依赖：STM32 HAL（hspi1 + PB0 CS）---- */
-
-    /* 关闭 SPI1 外设与 DMA 流控 */
-    HAL_SPI_DeInit(&hspi1);
-
-    /* CS(PB0) → 推挽高电平输出，防浮空漏电 */
-    GPIO_InitTypeDef gpio = {0};
-    gpio.Pin   = SD_CS_Pin;
-    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
-    gpio.Pull  = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(SD_CS_GPIO_Port, &gpio);
-    SD_CS_HIGH();
-
-    /* ---- 平台依赖结束 ---- */
-
+    if (card->io.deinit != NULL) card->io.deinit(card->io.context);
     (void)memset(&card->info, 0x00, sizeof(card->info));
     card->info.type  = SD_TYPE_NONE;
     card->info.speed = SD_SPI_SPEED_NULL;
+    card->busy = 0U;
 }
 
 //====================================================================
@@ -833,98 +731,11 @@ const char *SD_Decode_Status(uint16_t raw, char *buf, uint16_t buf_size)
 }
 
 //====================================================================
-//  SD_Show_Info_Card -- 查询容量/CID 并显示到 OLED（演示）
-//====================================================================
-//  若卡未初始化则先初始化，再把卡类型、容量、CID 关键字段渲染到 128x64 OLED。
-//  **平台依赖**：依赖 oled.hpp。CID 16 字节布局（大端）：
-//    [0]=MID 制造商ID  [1..2]=OID OEM(2 ASCII)  [3..7]=PNM 产品名(5 ASCII)
-//    [8]=PRV 版本  [9..12]=PSN 序列号(32位)  [13..14]=MDT 制造日期  [15]=CRC
-int SD_Show_Info_Card(SD_Card *card)
-{
-    if (card == NULL) return SD_PARAM_ERR;
-
-    /* 未初始化则先初始化（已初始化则直接用现有信息，不重复握手） */
-    if (!card->info.initialized)
-    {
-        int t = SD_Init_Card(card);
-        if (t <= 0)
-        {
-            /* 失败时给出明确、可读的原因，避免"无显示"让人误以为死机。
-             * 按错误码区分"未插卡/无应答"与"通信或初始化失败"两类常见情形。
-             * 每行 <=21 字符（128px/6px），避免超宽被裁剪。 */
-            const char *reason;
-            switch (t)
-            {
-                case SD_NO_CARD:   reason = "No card detected"; break;  /* CMD0/CMD8 无应答：多为未插卡或接触不良 */
-                case SD_TIMEOUT:   reason = "Init timeout";     break;  /* ACMD41 轮询超时：卡上电慢或异常 */
-                case SD_PARAM_ERR: reason = "IO not bound";     break;  /* 回调未绑定（移植问题） */
-                default:           reason = "Init error";       break;  /* CMD16/CSD 等被拒 */
-            }
-            OLED_GRAM_Clear();
-            OLED_Show_String("SD Card", "1206", 0, 0);         /* 大字标题，醒目 */
-            OLED_Show_String("Not ready", "1206", 0, 16);
-            OLED_Show_String(reason, "0806", 0, 36);           /* 失败原因（已控制宽度） */
-            OLED_Show_String("Check card & wiring", "0806", 0, 48);
-            OLED_GRAM_Refresh();
-            return (t == 0) ? SD_NO_CARD : t;
-        }
-    }
-
-    const SD_CardInfo *info = &card->info;
-
-    /* 卡类型字符串 */
-    const char *type_str;
-    switch (info->type)
-    {
-        case SD_TYPE_V1:   type_str = "SDSC v1"; break;
-        case SD_TYPE_V2:   type_str = "SDSC v2"; break;
-        case SD_TYPE_V2HC: type_str = "SDHC/XC"; break;
-        default:           type_str = "Unknown"; break;
-    }
-
-    /* CID：OID(2 ASCII) 与 PNM(5 ASCII) 拷到带结束符的小缓冲，非可打印字符替为 '.' */
-    char oid[3], pnm[6];
-    for (uint8_t i = 0; i < 2U; ++i)
-    {
-        uint8_t c = info->cid_raw[1 + i];
-        oid[i] = (c >= 0x20U && c < 0x7FU) ? (char)c : '.';
-    }
-    oid[2] = '\0';
-    for (uint8_t i = 0; i < 5U; ++i)
-    {
-        uint8_t c = info->cid_raw[3 + i];
-        pnm[i] = (c >= 0x20U && c < 0x7FU) ? (char)c : '.';
-    }
-    pnm[5] = '\0';
-
-    uint32_t psn = ((uint32_t)info->cid_raw[9]  << 24) | ((uint32_t)info->cid_raw[10] << 16)
-                 | ((uint32_t)info->cid_raw[11] <<  8) |  (uint32_t)info->cid_raw[12];
-
-    /* 渲染（128x64，0806 字体 6x8，每行约 21 字符，逐行 8px） */
-    OLED_GRAM_Clear();
-    OLED_Show_String("SD Card Info", "0806", 0, 0);
-    OLED_Printf("0806", 0, 8,  "Type: %s", type_str);
-    if (info->capacity_mb >= 1024U)
-        OLED_Printf("0806", 0, 16, "Cap : %u.%uGB",
-                    (unsigned)(info->capacity_mb / 1024U),
-                    (unsigned)((info->capacity_mb % 1024U) * 10U / 1024U));
-    else
-        OLED_Printf("0806", 0, 16, "Cap : %u MB", (unsigned)info->capacity_mb);
-    OLED_Printf("0806", 0, 24, "Blocks: %u", (unsigned)info->block_count);
-    OLED_Printf("0806", 0, 32, "MID:0x%02X OID:%s", (unsigned)info->cid_raw[0], oid);
-    OLED_Printf("0806", 0, 40, "Name: %s", pnm);
-    OLED_Printf("0806", 0, 48, "SN  : 0x%08X", (unsigned)psn);
-    OLED_GRAM_Refresh();
-    return SD_OK;
-}
-
-//====================================================================
 //  SD_Self_Test_Card -- 非破坏性自检（保存 -> 测试 -> 还原）
 //====================================================================
 //  流程：初始化 -> 保存目标块原数据 -> 写入已知图案 ->
 //  读回逐字节比对 -> 还原原数据。任何步骤失败均尽力还原原数据。
-//  **平台依赖**：通过 OLED（oled.hpp）显示各步骤结果，
-//  若不需要 OLED 输出，可注释掉 OLED_* 相关调用行。
+//  驱动层只返回结果，不依赖显示或日志模块。
 //  **RAM 占用**：3×512B=1536B 文件作用域 static 缓冲（避免 1.5KB 栈帧溢出），
 //  非重入、单次诊断用。量产构建可 #define SD_ENABLE_SELF_TEST 0 整体裁剪以省下这 1.5KB。
 #if SD_ENABLE_SELF_TEST
@@ -933,55 +744,33 @@ int SD_Self_Test_Card(SD_Card *card, uint32_t test_block)
     static uint8_t wbuf[SD_BLOCK_SIZE];
     static uint8_t rbuf[SD_BLOCK_SIZE];
     static uint8_t save[SD_BLOCK_SIZE];
-    OLED_GRAM_Clear();
-    OLED_Show_String("SD Self-Test", "0806", 0, 0);
-    OLED_GRAM_Refresh();
     int type = SD_Init_Card(card);
-    if (type <= 0)
-    {
-        OLED_Show_String("Init failed", "0806", 0, 16);
-        OLED_GRAM_Refresh();
-        return SD_ERR;
-    }
-    OLED_Printf("0806", 0, 16, "Init OK t=%d", type);
-    OLED_GRAM_Refresh();
+    if (type <= 0) return type;
     if (SD_Read_Block_Card(card, test_block, save) != SD_OK)
     {
-        OLED_Show_String("Save failed", "0806", 0, 32);
-        OLED_GRAM_Refresh();
         return SD_ERR;
     }
     for (uint16_t i = 0; i < SD_BLOCK_SIZE; ++i) wbuf[i] = (uint8_t)(i ^ 0xA5U);
     if (SD_Write_Block_Card(card, test_block, wbuf) != SD_OK)
     {
         (void)SD_Write_Block_Card(card, test_block, save);
-        OLED_Show_String("Write failed", "0806", 0, 32);
-        OLED_GRAM_Refresh();
         return SD_ERR;
     }
     (void)memset(rbuf, 0x00, SD_BLOCK_SIZE);
     if (SD_Read_Block_Card(card, test_block, rbuf) != SD_OK)
     {
         (void)SD_Write_Block_Card(card, test_block, save);
-        OLED_Show_String("Read failed", "0806", 0, 32);
-        OLED_GRAM_Refresh();
         return SD_ERR;
     }
     if (memcmp(wbuf, rbuf, SD_BLOCK_SIZE) != 0)
     {
         (void)SD_Write_Block_Card(card, test_block, save);
-        OLED_Show_String("Verify failed", "0806", 0, 32);
-        OLED_GRAM_Refresh();
         return SD_ERR;
     }
     if (SD_Write_Block_Card(card, test_block, save) != SD_OK)
     {
-        OLED_Show_String("Restore failed", "0806", 0, 40);
-        OLED_GRAM_Refresh();
         return SD_ERR;
     }
-    OLED_Show_String("All passed", "1206", 0, 32);
-    OLED_GRAM_Refresh();
     return SD_OK;
 }
 #endif /* SD_ENABLE_SELF_TEST */
@@ -1009,7 +798,7 @@ int SD_Self_Test_Card(SD_Card *card, uint32_t test_block)
 uint8_t SD_Send_Command(uint8_t cmd, uint32_t arg, uint8_t crc)
 {
     SD_Card *card = &g_sd_card;
-    if (card->io.spi_byte == NULL) SD_Init_Default_IO(card);
+    if (card->io.spi_byte == NULL) return SD_R1_NO_RESPONSE;
     /* 复用 _sd_cmd_raw 的帧封装与 R1 轮询，仅在外层补 CS 管理，避免协议逻辑两处重复 */
     SD_IO_CS_LOW(card);
     uint8_t r1 = _sd_cmd_raw(card, cmd, arg, crc);

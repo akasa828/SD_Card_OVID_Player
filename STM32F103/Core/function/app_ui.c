@@ -715,10 +715,8 @@ void AppUI_RenderDiagnostics(uint8_t page, uint8_t key_mask, int16_t sd_test_res
         ui_text(2, 46, line, UI_FONT_SMALL);
     } else if (page == 1U) {
         uint32_t spi_hz = 0U;
-        if (g_sd_card.io.get_bus_clk && g_sd_card.io.get_prescaler) {
-            uint32_t divider = 2UL << (g_sd_card.io.get_prescaler() >> 3U);
-            if (divider) spi_hz = g_sd_card.io.get_bus_clk() / divider;
-        }
+        if (g_sd_card.io.get_sck_hz != NULL)
+            spi_hz = g_sd_card.io.get_sck_hz(g_sd_card.io.context);
         (void)snprintf(line, sizeof(line), "SD:%s T:%u E:%lu",
                        g_sd_card.info.initialized ? "Ready" : "Wait",
                        g_sd_card.info.type, (unsigned long)SystemDiag_GetSdErrorCount());
