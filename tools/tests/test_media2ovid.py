@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import random
 from pathlib import Path
 
 
@@ -43,6 +44,22 @@ class MediaToOvidTests(unittest.TestCase):
             media2ovid.monochrome_to_page_major(image),
             bytes([0x81, 0x00, 0x00, 0x01]),
         )
+
+    def test_fast_page_packer_matches_pixel_reference(self):
+        randomizer = random.Random(20260822)
+        for width, height in ((1, 1), (7, 9), (13, 17), (96, 64), (128, 128)):
+            image = Image.new("1", (width, height), 0)
+            for y in range(height):
+                for x in range(width):
+                    image.putpixel((x, y), randomizer.randrange(2))
+            expected = bytearray(width * ((height + 7) // 8))
+            for page in range((height + 7) // 8):
+                for x in range(width):
+                    for bit in range(8):
+                        y = page * 8 + bit
+                        if y < height and image.getpixel((x, y)):
+                            expected[page * width + x] |= 1 << bit
+            self.assertEqual(bytes(expected), media2ovid.monochrome_to_page_major(image))
 
     def test_image_conversion_writes_valid_v2_atomically(self):
         with tempfile.TemporaryDirectory(prefix="OVID 中文 path ") as directory:
@@ -97,6 +114,39 @@ class MediaToOvidTests(unittest.TestCase):
             options = self.options(source, root / "output.bin", skip_frames=1)
             with self.assertRaisesRegex(ValueError, "没有可转换的画面"):
                 media2ovid.probe_source(options)
+
+    def test_trim_uses_inclusive_start_and_exclusive_end(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frames = root / "frames"
+            frames.mkdir()
+            for index in range(10):
+                Image.new("L", (8, 8), index * 25).save(frames / f"{index}.png")
+            options = self.options(
+                frames,
+                root / "trim.bin",
+                fps=2,
+                trim_start_seconds=1.0,
+                trim_end_seconds=3.5,
+            )
+            info = media2ovid.probe_source(options)
+            summary = media2ovid.convert_media(options, source_info=info)
+            self.assertEqual(5, info.frame_count)
+            self.assertEqual(5, summary.frame_count)
+
+    def test_parallel_conversion_matches_single_thread_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frames = root / "frames"
+            frames.mkdir()
+            for index in range(12):
+                image = Image.new("L", (24, 16), index * 17)
+                image.save(frames / f"frame{index}.png")
+            single = self.options(frames, root / "single.bin", width=16, height=16, workers=1)
+            parallel = self.options(frames, root / "parallel.bin", width=16, height=16, workers=4)
+            media2ovid.convert_media(single)
+            media2ovid.convert_media(parallel)
+            self.assertEqual(single.output.read_bytes(), parallel.output.read_bytes())
 
     def test_contain_cover_stretch_threshold_and_invert(self):
         source = Image.new("L", (4, 2), 255)
