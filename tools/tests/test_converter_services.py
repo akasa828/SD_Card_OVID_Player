@@ -67,6 +67,18 @@ class ConverterServicesTests(unittest.TestCase):
             self.assertEqual("queued", job.state)
             self.assertEqual("", job.error)
 
+    def test_queue_reserves_duplicate_outputs_before_files_exist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            options = self.options(root, output=root / "movie.BIN")
+            queue = services.ConversionQueue()
+            first = queue.add(options, target_profile="stm32f103-128x32")
+            second = queue.add(options, target_profile="stm32f103-96x64")
+            self.assertEqual("movie.BIN", first.options.output.name)
+            self.assertEqual("movie_2.BIN", second.options.output.name)
+            self.assertEqual("stm32f103-128x32", first.target_profile)
+            self.assertEqual("stm32f103-96x64", second.target_profile)
+
     def test_compatibility_reports_screen_and_filename_problems(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

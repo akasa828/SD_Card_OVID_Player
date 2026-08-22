@@ -1,0 +1,16 @@
+[project]
+name = "flet-drop-zone"
+version = "0.1.0"
+description = "Windows Explorer drop target for the OVID Converter"
+requires-python = ">=3.10"
+dependencies = ["flet==0.86.5"]
+
+[tool.setuptools.package-data]
+"flutter.flet_drop_zone" = ["**/*"]
+
+[tool.setuptools]
+license-files = []
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"

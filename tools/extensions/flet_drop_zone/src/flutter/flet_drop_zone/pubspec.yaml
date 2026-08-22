@@ -1,0 +1,19 @@
+name: flet_drop_zone
+description: Native desktop file drop target for the OVID Converter
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: ">=3.19.0"
+
+dependencies:
+  flet: ^0.86.5
+  flutter:
+    sdk: flutter
+  desktop_drop: 0.8.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0

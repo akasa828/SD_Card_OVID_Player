@@ -14,6 +14,16 @@ Flutter desktop runtime
   Source: https://github.com/flutter/flutter
   The packaged Flutter runtime also carries its generated NOTICES file.
 
+FletDropZone 0.1.0
+  Copyright (c) 2026 riochihao
+  License: MIT
+  Source: this repository, tools/extensions/flet_drop_zone
+
+desktop_drop 0.8.0
+  Copyright 2021 Mixin
+  License: Apache License 2.0
+  Source: https://pub.dev/packages/desktop_drop
+
 Pillow 12.3.0
   Copyright 1995-2011 Fredrik Lundh and contributors
   Copyright 2010-2026 Jeffrey A. Clark and contributors

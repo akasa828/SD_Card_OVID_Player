@@ -21,6 +21,12 @@ def collect(output_root: Path, app_root: Path | None = None) -> None:
     notices = Path(__file__).resolve().parent / "THIRD_PARTY_NOTICES.txt"
     shutil.copy2(notices, output_root / notices.name)
 
+    extension_license = (
+        Path(__file__).resolve().parent / "extensions" / "flet_drop_zone" / "LICENSE"
+    )
+    if extension_license.is_file():
+        shutil.copy2(extension_license, destination / "FletDropZone-MIT.txt")
+
     font_root = Path(__file__).resolve().parent / "assets" / "fonts"
     for filename in FONT_LICENSE_FILES:
         shutil.copy2(font_root / filename, destination / filename)
@@ -44,7 +50,9 @@ def collect(output_root: Path, app_root: Path | None = None) -> None:
     packaging = importlib.metadata.distribution("packaging")
     for entry in packaging.files or ():
         if Path(str(entry)).name.casefold() == "license.apache":
-            shutil.copy2(packaging.locate_file(entry), destination / "Flet_Apache-2.0.txt")
+            apache_license = packaging.locate_file(entry)
+            shutil.copy2(apache_license, destination / "Flet_Apache-2.0.txt")
+            shutil.copy2(apache_license, destination / "desktop_drop_Apache-2.0.txt")
             break
 
     python_license = Path(sys.base_prefix) / "LICENSE.txt"

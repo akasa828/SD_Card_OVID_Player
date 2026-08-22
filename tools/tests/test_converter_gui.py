@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = ROOT / "tools"
 GUI_SOURCE = ROOT / "tools" / "ovid_converter_gui.py"
 PACKAGE_SOURCE = ROOT / "tools" / "package_converter.ps1"
+FLUTTER_PACKAGE_SOURCE = ROOT / "tools" / "package_converter_flutter.ps1"
 WORKFLOW_SOURCE = ROOT / ".github" / "workflows" / "release-assets.yml"
 FONT_ROOT = ROOT / "tools" / "assets" / "fonts"
 BUILD_BATCH = ROOT / "Build_OVID_Converter.bat"
@@ -304,9 +305,20 @@ class ConverterGuiTests(unittest.TestCase):
 
     def test_gui_centers_after_initial_layout(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")
+        hidden = source.index("page.window.visible = False")
         layout = source.index("ConverterApp(page)")
         centered = source.index("await page.window.center()")
+        visible = source.index("page.window.visible = True")
+        self.assertLess(hidden, layout)
         self.assertLess(layout, centered)
+        self.assertLess(centered, visible)
+
+    def test_desktop_drop_data_is_decoded_and_filtered(self) -> None:
+        paths = converter_gui.parse_drop_paths('["C:/media/a.mp4", "C:/media/b.gif"]')
+        self.assertEqual([Path("C:/media/a.mp4"), Path("C:/media/b.gif")], paths)
+        self.assertEqual([], converter_gui.parse_drop_paths("{"))
+        self.assertTrue(converter_gui.is_supported_source(Path("frame.PNG")))
+        self.assertFalse(converter_gui.is_supported_source(Path("notes.txt")))
 
     def test_font_assets_are_added_to_windows_package(self) -> None:
         source = PACKAGE_SOURCE.read_text(encoding="utf-8")
@@ -315,8 +327,22 @@ class ConverterGuiTests(unittest.TestCase):
     def test_release_workflow_keeps_both_windows_packages(self) -> None:
         source = WORKFLOW_SOURCE.read_text(encoding="utf-8")
         self.assertIn("Build portable ZIP and installer", source)
+        self.assertIn("subosito/flutter-action@v2", source)
+        self.assertIn("package_converter_flutter.ps1", source)
         self.assertIn("OVID_Converter_Windows_x64_Portable_*.zip", source)
         self.assertIn("OVID_Converter_Windows_x64_Setup_*.exe", source)
+
+    def test_full_release_build_compiles_the_drop_extension(self) -> None:
+        source = FLUTTER_PACKAGE_SOURCE.read_text(encoding="utf-8")
+        project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        dart = (
+            ROOT
+            / "tools/extensions/flet_drop_zone/src/flutter/flet_drop_zone/lib/src/flet_drop_zone.dart"
+        ).read_text(encoding="utf-8")
+        self.assertIn("flet.cli build windows", source)
+        self.assertIn('flet-drop-zone = { path = "tools/extensions/flet_drop_zone" }', project)
+        self.assertIn("DropTarget(", dart)
+        self.assertIn("onDragDone", dart)
 
     def test_interface_does_not_use_common_traditional_variants(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")

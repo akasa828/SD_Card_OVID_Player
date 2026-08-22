@@ -207,6 +207,8 @@ def parse_drop_paths(value: object) -> list[Path]:
         try:
             value = json.loads(value)
         except json.JSONDecodeError:
+            if value.lstrip().startswith(("[", "{")):
+                return []
             value = [value]
     if not isinstance(value, (list, tuple)):
         return []
