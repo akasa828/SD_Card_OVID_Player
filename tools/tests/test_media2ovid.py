@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 import random
+from unittest import mock
 from pathlib import Path
 
 
@@ -24,6 +25,25 @@ except ImportError:  # pragma: no cover - CI installs converter requirements
 
 @unittest.skipIf(Image is None, "Pillow is not installed")
 class MediaToOvidTests(unittest.TestCase):
+
+    def test_preview_video_uses_fast_timestamp_seeking(self):
+        options = media2ovid.ConversionOptions(
+            Path("clip.mp4"),
+            Path("output.bin"),
+            fps=30,
+            trim_start_seconds=42.5,
+        )
+        info = media2ovid.SourceInfo("video", 1, 1 / 30, 30.0, (1920, 1080))
+        frame = object()
+        with mock.patch.object(
+            media2ovid,
+            "_iter_video_fast",
+            return_value=iter([frame]),
+        ) as fast:
+            self.assertEqual([frame], list(media2ovid.iter_preview_images(options, info)))
+        preview_options = fast.call_args.args[0]
+        self.assertTrue(preview_options.fast_video)
+        self.assertEqual(42.5, preview_options.trim_start_seconds)
 
     def test_ffmpeg_version_is_available_for_conversion_logs(self):
         try:

@@ -44,10 +44,11 @@ from media2ovid import (
     convert_media,
     estimate_output_bytes,
     ffmpeg_version,
-    iter_source_images,
+    iter_preview_images,
     prepare_monochrome_source,
     preview_prepared_png,
     probe_source,
+    trim_source_info,
 )
 from ovid_player import OvidPlaybackSession
 
@@ -68,6 +69,7 @@ VALID_THEME_MODES = frozenset({"system", "light", "dark"})
 PROGRESS_FRAME_INTERVAL = 0.016
 PROGRESS_EASING_SECONDS = 0.12
 PROGRESS_FINISH_SECONDS = 0.25
+TIMELINE_LABEL_INTERVAL = 1.0 / 30.0
 MATERIAL_LIGHT_COLORS = {
     "primary": "#6750A4",
     "on_primary": "#FFFFFF",
@@ -140,6 +142,19 @@ MATERIAL_DARK_COLORS = {
 
 class PreviewFinished(RuntimeError):
     """The preview iterator reached the end of the selected media."""
+
+
+def format_timestamp(seconds: float | int | None) -> str:
+    if seconds is None or not math.isfinite(float(seconds)):
+        return "--:--.--"
+    value = max(0.0, float(seconds))
+    centiseconds = math.floor(value * 100 + 0.5)
+    hours, remainder = divmod(centiseconds, 360_000)
+    minutes, remainder = divmod(remainder, 6_000)
+    whole_seconds, fraction = divmod(remainder, 100)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{fraction:02d}"
+    return f"{minutes:02d}:{whole_seconds:02d}.{fraction:02d}"
 
 
 def parse_preview_fps(value: object) -> int:
@@ -361,7 +376,7 @@ class PreviewSession:
         while self.pending:
             self.pending.popleft().cancel()
         if self.executor is not None:
-            self.executor.shutdown(wait=True, cancel_futures=True)
+            self.executor.shutdown(wait=False, cancel_futures=True)
         self.executor = None
         self.source_exhausted = False
         self.last_source_image = None
@@ -371,7 +386,7 @@ class PreviewSession:
         self.close()
         self.options = options
         self.info = info
-        self.iterator = iter_source_images(options, info)
+        self.iterator = iter_preview_images(options, info)
         self.frames.clear()
         self.index = -1
         self.base_index = 0
@@ -471,6 +486,7 @@ class ConverterApp:
         self.logger = ConversionLogger()
         self.player = OvidPlaybackSession()
         self.source_info = None
+        self.source_info_key: tuple[str, int, bool] | None = None
         self.queue_runner_task: asyncio.Task | None = None
         self.queue_cancel_event = threading.Event()
         self.active_queue_job_id: str | None = None
@@ -481,6 +497,11 @@ class ConverterApp:
         self.preview_playback_revision = 0
         self.preview_render_revision = 0
         self.preview_playing = False
+        self.preview_timeline_dragging = False
+        self.trim_dragging = False
+        self.resume_preview_after_drag = False
+        self.trim_label_task: asyncio.Task | None = None
+        self.preview_time_task: asyncio.Task | None = None
         self.preview_needs_reload = False
         self.conversion_revision = 0
         self.latest_conversion_progress: tuple[int, ConversionProgress] | None = None
@@ -489,6 +510,9 @@ class ConverterApp:
         self.progress_finish_event: asyncio.Event | None = None
         self.progress_render_task: asyncio.Task | None = None
         self.busy = False
+        self.player_timeline_dragging = False
+        self.resume_player_after_drag = False
+        self.player_time_task: asyncio.Task | None = None
         self.page_index = 0
         self.file_picker = ft.FilePicker()
         self.page.services.append(self.file_picker)
@@ -641,9 +665,11 @@ class ConverterApp:
             max=1,
             start_value=0,
             end_value=1,
-            divisions=1,
             round=2,
+            label="{value} 秒",
             disabled=True,
+            on_change_start=self._trim_drag_start,
+            on_change=self._trim_drag_changed,
             on_change_end=self._on_trim_change,
         )
         self.trim_label = ft.Text("单张图片无需裁剪", color=ft.Colors.ON_SURFACE_VARIANT)
@@ -651,10 +677,16 @@ class ConverterApp:
             min=0,
             max=1,
             value=0,
-            divisions=1,
+            round=2,
             label="{value} 秒",
             visible=False,
+            on_change_start=self._preview_drag_start,
+            on_change=self._preview_drag_changed,
             on_change_end=self._preview_seek,
+        )
+        self.preview_time_label = ft.Text(
+            "00:00.00 / --:--.--",
+            color=ft.Colors.ON_SURFACE_VARIANT,
         )
 
         self.original_preview_image = ft.Image(
@@ -716,9 +748,16 @@ class ConverterApp:
             min=0,
             max=1,
             value=0,
-            divisions=1,
+            round=2,
+            label="{value} 秒",
             disabled=True,
+            on_change_start=self._player_drag_start,
+            on_change=self._player_drag_changed,
             on_change_end=self._player_seek,
+        )
+        self.player_time_label = ft.Text(
+            "00:00.00 / --:--.--",
+            color=ft.Colors.ON_SURFACE_VARIANT,
         )
         self.player_invert = ft.Switch(label="反显", value=False, on_change=self._player_redraw)
         self.player_scale = ft.Dropdown(
@@ -884,6 +923,7 @@ class ConverterApp:
                     wrap=True,
                 ),
                 self.preview_timeline,
+                self.preview_time_label,
                 self.trim_slider,
                 self.trim_label,
             ],
@@ -1068,6 +1108,7 @@ class ConverterApp:
                     wrap=True,
                 ),
                 self.player_label,
+                self.player_time_label,
             ],
             scroll=ft.ScrollMode.AUTO,
             expand=True,
@@ -1524,8 +1565,7 @@ class ConverterApp:
         self.player_path.value = str(path)
         self.player_slider.disabled = False
         self.player_slider.min = 0
-        self.player_slider.max = max(1, header.frame_count - 1)
-        self.player_slider.divisions = max(1, header.frame_count - 1)
+        self.player_slider.max = max(1 / header.fps, (header.frame_count - 1) / header.fps)
         self.player_slider.value = 0
         self.player_playing = False
         self.player_revision += 1
@@ -1541,20 +1581,60 @@ class ConverterApp:
             scale=int(self.player_scale.value),
         )
         self.player_image.src = frame.png
-        self.player_slider.value = frame.index
         header = self.player.header
+        if not self.player_timeline_dragging:
+            self.player_slider.value = frame.index / header.fps
         crc = "CRC 正确" if frame.crc_valid else "CRC 错误，保持上一帧"
         self.player_label.value = (
             f"第 {frame.index + 1}/{header.frame_count} 帧 · "
             f"{header.width}×{header.height} · {header.fps} FPS · {crc}"
         )
-        self.page.update(self.player_image, self.player_slider, self.player_label)
+        current_seconds = frame.index / header.fps
+        total_seconds = header.frame_count / header.fps
+        self.player_time_label.value = (
+            f"{format_timestamp(current_seconds)} / {format_timestamp(total_seconds)}"
+        )
+        self.page.update(
+            self.player_image,
+            self.player_slider,
+            self.player_label,
+            self.player_time_label,
+        )
+
+    def _player_drag_start(self, _) -> None:
+        self.resume_player_after_drag = self.player_playing
+        self.player_timeline_dragging = True
+        self.player_playing = False
+        self.player_revision += 1
+        self.player_play_button.icon = ft.Icons.PLAY_ARROW
+        self.page.update(self.player_play_button)
+
+    def _player_drag_changed(self, _) -> None:
+        if self.player_time_task is None or self.player_time_task.done():
+            self.player_time_task = asyncio.create_task(self._flush_player_time_label())
+
+    async def _flush_player_time_label(self) -> None:
+        await asyncio.sleep(TIMELINE_LABEL_INTERVAL)
+        if self.player.header is None:
+            return
+        total = self.player.header.frame_count / self.player.header.fps
+        self.player_time_label.value = (
+            f"{format_timestamp(float(self.player_slider.value))} / "
+            f"{format_timestamp(total)}"
+        )
+        self.page.update(self.player_time_label)
 
     async def _player_seek(self, _):
         try:
-            self._draw_player_frame(round(float(self.player_slider.value)))
+            index = round(float(self.player_slider.value) * self.player.header.fps)
+            self._draw_player_frame(index)
         except Exception as exc:
             self._show_error("无法定位 OVID 帧", exc)
+        finally:
+            self.player_timeline_dragging = False
+            if self.resume_player_after_drag:
+                self.resume_player_after_drag = False
+                await self._toggle_player(None)
 
     async def _player_first(self, _):
         if self.player.header is not None:
@@ -1645,6 +1725,7 @@ class ConverterApp:
         self.preview_revision += 1
         self.preview_play_button.icon = ft.Icons.PLAY_ARROW
         self.source_info = None
+        self.source_info_key = None
         self.trim_slider.disabled = True
         self.trim_slider.min = 0
         self.trim_slider.max = 1
@@ -1656,6 +1737,19 @@ class ConverterApp:
         self.output_field.value = str(output_dir / f"{source.stem}.BIN")
         self.preview_label.value = "正在载入预览…"
         self.page.update()
+
+    async def _source_info_for_options(self, options: ConversionOptions):
+        key = (str(options.source.resolve()), options.fps, options.recursive)
+        if self.source_info is None or self.source_info_key != key:
+            metadata_options = replace(
+                options,
+                trim_start_seconds=0.0,
+                trim_end_seconds=None,
+                skip_frames=0,
+            )
+            self.source_info = await asyncio.to_thread(probe_source, metadata_options)
+            self.source_info_key = key
+        return trim_source_info(self.source_info, options)
 
     async def _refresh_preview(self, _=None):
         self.preview_revision += 1
@@ -1673,14 +1767,13 @@ class ConverterApp:
             first_probe = self.source_info is None
             async with self.preview_lock:
                 await asyncio.to_thread(self.preview.close)
-                info = await asyncio.to_thread(probe_source, options)
+                info = await self._source_info_for_options(options)
                 await asyncio.to_thread(self.preview.reset, options, info)
                 original, data, index = await asyncio.to_thread(self.preview.next_frame)
             if revision != self.preview_revision:
                 return
-            self.source_info = info
             if first_probe:
-                self._configure_trim_timeline(info)
+                self._configure_trim_timeline(self.source_info)
             total = info.frame_count if info.frame_count is not None else "?"
             estimate = estimate_output_bytes(options, info)
             self._set_preview_frame(
@@ -1744,13 +1837,75 @@ class ConverterApp:
         self.preview_image.src = data
         self.preview_label.value = label
         controls = [self.original_preview_image, self.preview_image, self.preview_label]
-        if index is not None and self.preview_timeline.visible and self.preview.options is not None:
+        position = None
+        if (
+            index is not None
+            and self.preview_timeline.visible
+            and self.preview.options is not None
+            and not self.preview_timeline_dragging
+        ):
             position = self.preview.options.trim_start_seconds + (index - 1) / max(
                 1, self.preview.options.fps
             )
             self.preview_timeline.value = min(self.preview_timeline.max, max(0.0, position))
             controls.append(self.preview_timeline)
+        elif index is not None and self.preview.options is not None:
+            position = self.preview.options.trim_start_seconds + (index - 1) / max(
+                1, self.preview.options.fps
+            )
+        if position is not None:
+            total = self.source_info.duration_seconds if self.source_info is not None else None
+            self.preview_time_label.value = (
+                f"{format_timestamp(position)} / {format_timestamp(total)}"
+            )
+            controls.append(self.preview_time_label)
         self.page.update(*controls)
+
+    def _pause_preview_for_drag(self) -> None:
+        self.resume_preview_after_drag = self.preview_playing
+        self.preview_playing = False
+        self.preview_playback_revision += 1
+        self.preview_play_button.icon = ft.Icons.PLAY_ARROW
+        self.page.update(self.preview_play_button)
+
+    def _trim_drag_start(self, _) -> None:
+        self.trim_dragging = True
+        self._pause_preview_for_drag()
+
+    def _trim_drag_changed(self, _) -> None:
+        if self.trim_label_task is None or self.trim_label_task.done():
+            self.trim_label_task = asyncio.create_task(self._flush_trim_label())
+
+    async def _flush_trim_label(self) -> None:
+        await asyncio.sleep(TIMELINE_LABEL_INTERVAL)
+        self._update_trim_label()
+
+    def _update_trim_label(self) -> None:
+        start = float(self.trim_slider.start_value)
+        end = float(self.trim_slider.end_value)
+        self.trim_label.value = (
+            f"起点 {format_timestamp(start)}    "
+            f"终点 {format_timestamp(end)}    "
+            f"选中 {format_timestamp(max(0.0, end - start))}"
+        )
+        self.page.update(self.trim_label)
+
+    def _preview_drag_start(self, _) -> None:
+        self.preview_timeline_dragging = True
+        self._pause_preview_for_drag()
+
+    def _preview_drag_changed(self, _) -> None:
+        if self.preview_time_task is None or self.preview_time_task.done():
+            self.preview_time_task = asyncio.create_task(self._flush_preview_time_label())
+
+    async def _flush_preview_time_label(self) -> None:
+        await asyncio.sleep(TIMELINE_LABEL_INTERVAL)
+        total = self.source_info.duration_seconds if self.source_info is not None else None
+        self.preview_time_label.value = (
+            f"{format_timestamp(float(self.preview_timeline.value))} / "
+            f"{format_timestamp(total)}"
+        )
+        self.page.update(self.preview_time_label)
 
     async def _preview_seek(self, event) -> None:
         if not self.source_field.value:
@@ -1759,6 +1914,11 @@ class ConverterApp:
         revision = self.preview_revision
         self.preview_playing = False
         self.preview_playback_revision += 1
+        self.preview_time_label.value = (
+            f"{format_timestamp(float(event.control.value))} / "
+            f"{format_timestamp(self.source_info.duration_seconds if self.source_info else None)}"
+        )
+        self.page.update(self.preview_time_label)
         try:
             options = self._options(require_output=False)
             position = max(float(self.trim_slider.start_value), float(event.control.value))
@@ -1770,7 +1930,7 @@ class ConverterApp:
                 position = min(position, latest)
             seek_options = replace(options, trim_start_seconds=position, skip_frames=0)
             async with self.preview_lock:
-                info = await asyncio.to_thread(probe_source, seek_options)
+                info = await self._source_info_for_options(seek_options)
                 await asyncio.to_thread(self.preview.reset, seek_options, info)
                 original, data, index = await asyncio.to_thread(self.preview.next_frame)
             if revision != self.preview_revision:
@@ -1784,6 +1944,11 @@ class ConverterApp:
         except Exception as exc:
             if revision == self.preview_revision:
                 self._show_error("无法跳转预览", exc)
+        finally:
+            self.preview_timeline_dragging = False
+            if self.resume_preview_after_drag and revision == self.preview_revision:
+                self.resume_preview_after_drag = False
+                await self._toggle_preview_playback(None)
 
     async def _toggle_preview_playback(self, _):
         if self.preview_playing:
@@ -1827,7 +1992,7 @@ class ConverterApp:
         try:
             options = self._options()
             options.validate()
-            info = self.source_info or await asyncio.to_thread(probe_source, options)
+            info = await self._source_info_for_options(options)
             report = await asyncio.to_thread(
                 check_compatibility,
                 options,
@@ -2033,33 +2198,44 @@ class ConverterApp:
             self.preview_timeline.visible = False
             self.trim_slider.disabled = True
             self.trim_label.value = "单张图片无需裁剪"
-            self.page.update(self.preview_timeline, self.trim_slider, self.trim_label)
+            self.preview_time_label.value = "00:00.00 / 00:00.00"
+            self.page.update(
+                self.preview_timeline,
+                self.preview_time_label,
+                self.trim_slider,
+                self.trim_label,
+            )
             return
         duration = max(1 / max(1, int(self.fps_field.value)), info.duration_seconds)
         self.preview_timeline.visible = True
         self.preview_timeline.min = 0
         self.preview_timeline.max = duration
         self.preview_timeline.value = 0
-        self.preview_timeline.divisions = min(
-            1000, max(1, info.frame_count or round(duration * 10))
-        )
         self.trim_slider.disabled = False
         self.trim_slider.min = 0
         self.trim_slider.max = duration
         self.trim_slider.start_value = 0
         self.trim_slider.end_value = duration
-        self.trim_slider.divisions = min(1000, max(1, info.frame_count or round(duration * 10)))
-        self.trim_label.value = f"转换范围：0.00–{duration:.2f} 秒"
-        self.page.update(self.preview_timeline, self.trim_slider, self.trim_label)
+        self.preview_time_label.value = f"00:00.00 / {format_timestamp(duration)}"
+        self._update_trim_label()
+        self.page.update(
+            self.preview_timeline,
+            self.preview_time_label,
+            self.trim_slider,
+            self.trim_label,
+        )
 
     async def _on_trim_change(self, _):
-        start = float(self.trim_slider.start_value)
-        end = float(self.trim_slider.end_value)
-        self.trim_label.value = f"转换范围：{start:.2f}–{end:.2f} 秒（终点不包含）"
-        self.page.update(self.trim_label)
-        if self.source_field.value:
-            self.preview_revision += 1
-            await self._load_first_preview()
+        self._update_trim_label()
+        try:
+            if self.source_field.value:
+                self.preview_revision += 1
+                await self._load_first_preview()
+        finally:
+            self.trim_dragging = False
+            if self.resume_preview_after_drag:
+                self.resume_preview_after_drag = False
+                await self._toggle_preview_playback(None)
 
     async def _auto_threshold_clicked(self, event) -> None:
         await self._auto_threshold(str(event.control.data))

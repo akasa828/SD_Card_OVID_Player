@@ -20,7 +20,7 @@ import re
 import sys
 import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from itertools import islice
 from pathlib import Path
@@ -233,19 +233,19 @@ def probe_source(options: ConversionOptions) -> SourceInfo:
             raise ValueError("图片目录中没有找到受支持的图片")
         with Image.open(files[0]) as image:
             size = image.size
-        return _trim_source_info(
+        return trim_source_info(
             SourceInfo(kind, len(files), len(files) / options.fps, None, size), options
         )
     if kind == "image":
         with Image.open(options.source) as image:
-            return _trim_source_info(
+            return trim_source_info(
                 SourceInfo(kind, 1, 1 / options.fps, None, image.size), options
             )
     if kind == "gif":
         with Image.open(options.source) as image:
             duration_ms = _gif_duration_ms(image)
             frames = max(1, math.ceil(duration_ms * options.fps / 1000))
-            return _trim_source_info(
+            return trim_source_info(
                 SourceInfo(kind, frames, duration_ms / 1000, None, image.size), options
             )
 
@@ -265,10 +265,10 @@ def probe_source(options: ConversionOptions) -> SourceInfo:
     size_value = metadata.get("size")
     size = tuple(size_value) if size_value else None
     estimated = max(1, math.ceil(duration * options.fps)) if duration else None
-    return _trim_source_info(SourceInfo(kind, estimated, duration, source_fps, size), options)
+    return trim_source_info(SourceInfo(kind, estimated, duration, source_fps, size), options)
 
 
-def _trim_source_info(info: SourceInfo, options: ConversionOptions) -> SourceInfo:
+def trim_source_info(info: SourceInfo, options: ConversionOptions) -> SourceInfo:
     start, end = _timeline_bounds(
         options, info.duration_seconds, info.frame_count
     )
@@ -491,6 +491,32 @@ def iter_source_images(
         else:
             start, end = _timeline_bounds(options, None, None)
             yield from islice(frames, start, end)
+    finally:
+        close = getattr(frames, "close", None)
+        if close is not None:
+            close()
+
+
+def iter_preview_images(
+    options: ConversionOptions,
+    info: SourceInfo | None = None,
+) -> Iterator[object]:
+    """Stream preview frames with fast timestamp seeking for video sources.
+
+    Preview seeking is intentionally independent from the converter's
+    compatibility mode: FFmpeg may seek directly for the desktop preview,
+    while final OVID output keeps the exact frame-selection path requested by
+    ``options.fast_video``.
+    """
+    if source_kind(options.source) != "video":
+        yield from iter_source_images(options, info)
+        return
+
+    preview_options = replace(options, fast_video=True)
+    frames = _iter_video_fast(preview_options)
+    try:
+        stop = info.frame_count if info is not None else None
+        yield from islice(frames, 0, stop)
     finally:
         close = getattr(frames, "close", None)
         if close is not None:

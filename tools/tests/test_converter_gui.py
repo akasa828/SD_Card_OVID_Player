@@ -22,6 +22,28 @@ import ovid_converter_gui as converter_gui  # noqa: E402
 
 
 class ConverterGuiTests(unittest.TestCase):
+    def test_timestamps_use_consistent_centisecond_format(self) -> None:
+        self.assertEqual("00:00.00", converter_gui.format_timestamp(0))
+        self.assertEqual("01:02.35", converter_gui.format_timestamp(62.345))
+        self.assertEqual("01:01:01.25", converter_gui.format_timestamp(3661.25))
+        self.assertEqual("--:--.--", converter_gui.format_timestamp(None))
+
+    def test_timeline_sliders_are_continuous_and_defer_seeking(self) -> None:
+        source = GUI_SOURCE.read_text(encoding="utf-8")
+        trim_start = source.index("self.trim_slider = ft.RangeSlider(")
+        trim_end = source.index("self.trim_label =", trim_start)
+        preview_start = source.index("self.preview_timeline = ft.Slider(")
+        preview_end = source.index("self.preview_time_label", preview_start)
+        player_start = source.index("self.player_slider = ft.Slider(")
+        player_end = source.index("self.player_time_label", player_start)
+        for slider_source in (
+            source[trim_start:trim_end],
+            source[preview_start:preview_end],
+            source[player_start:player_end],
+        ):
+            self.assertNotIn("divisions=", slider_source)
+            self.assertIn("on_change_start=", slider_source)
+            self.assertIn("on_change_end=", slider_source)
     def test_fixed_threshold_is_the_default_dither_mode(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")
         threshold = source.index('ft.Segment(\n                    value="threshold"')
