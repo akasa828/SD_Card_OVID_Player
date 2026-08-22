@@ -6,6 +6,7 @@
 
 ### Documentation
 
+- 在中英文 README 中补充 STM32 SD 卡视频播放器、SSD1306/SH1106 动画播放和 FatFs SPI SD 示例等自然检索描述，增加模糊搜索入口。
 - README 补充 AI 辅助开发说明，明确作者实际参与的硬件测试、需求设计、故障定位和迭代工作。
 - 修正 SD/FatFs 独立驱动仓库和 OVID Converter beta.2 的失效链接，恢复播放器、驱动与转换文档之间的互相入口。
 

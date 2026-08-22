@@ -27,6 +27,8 @@
 
 这个项目最开始只是为了在 STM32 上播放 Bad Apple。后来为了不把近 10 MB 的视频固定塞进 Flash，我换成了 SD 卡，也顺着这个问题加上 FatFs、文件浏览、播放器 UI 和自己的 OVID 帧格式。现在它更像一个完整的小播放器，而不再是一段只能播放单个数组的演示代码。
 
+如果你正在找 STM32 SD 卡视频播放器、SSD1306/SH1106 动画播放、STM32 Bad Apple，或者带 FatFs 的 SPI SD 卡示例，这个仓库里分别有完整播放器、素材转换工具和可单独参考的驱动。
+
 仓库里还有一个 Windows 桌面转换器，可以直接把图片、GIF、视频或图片目录变成 OLED 能播放的 `.BIN` 文件。想了解这一路为什么越做越复杂，可以看[完整的项目初衷](docs/PROJECT_STORY.md)。
 
 这是个人学习和实验性质的嵌入式项目，目前主要在 STM32F103C8T6、SSD1306 OLED 和 SPI Micro SD 模块上测试。`v1.3.0-beta.2` 是最新测试版；如果只想使用已经发布的稳定固件，请选择 [`v1.2.2`](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.2.2)。
@@ -148,7 +150,7 @@ SD 卡根目录/
 播放器内置的两个驱动也整理成了独立项目：
 
 - [STM32-HAL-SSD1306-SH1106](https://github.com/akasa828/STM32-HAL-SSD1306-SH1106)：绘图、双缓冲、I2C DMA 和控制器适配。
-- [STM32_HAL-SPI_SD-FatFs](https://github.com/akasa828/STM32_HAL-SPI_SD-FatFs)：SPI SD 协议核心、STM32 HAL 端口和 FatFs `diskio` 对接。
+- [STM32-HAL-SPI-SD-FatFs](https://github.com/akasa828/STM32-HAL-SPI-SD-FatFs)：SPI SD 协议核心、STM32 HAL 端口和 FatFs `diskio` 对接。
 
 | 文档 | 内容 |
 |---|---|
