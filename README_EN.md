@@ -148,7 +148,7 @@ Wait for card → mount FatFs → calculate capacity → scan files
 The two drivers used by the player are also maintained as standalone projects:
 
 - [STM32-HAL-SSD1306-SH1106](https://github.com/akasa828/STM32-HAL-SSD1306-SH1106): drawing, double buffering, I2C DMA, and controller configuration.
-- [STM32-HAL-SPI-SD-FatFs](https://github.com/akasa828/STM32-HAL-SPI-SD-FatFs): SPI SD protocol core, STM32 HAL port, and FatFs `diskio` integration.
+- [STM32_HAL-SPI_SD-FatFs](https://github.com/akasa828/STM32_HAL-SPI_SD-FatFs): SPI SD protocol core, STM32 HAL port, and FatFs `diskio` integration.
 
 | Document | Contents |
 |---|---|
