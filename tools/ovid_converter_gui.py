@@ -102,6 +102,40 @@ MATERIAL_LIGHT_COLORS = {
     "surface_container_high": "#ECE6F0",
     "surface_container_highest": "#E6E0E9",
 }
+MATERIAL_DARK_COLORS = {
+    "primary": "#D0BCFF",
+    "on_primary": "#381E72",
+    "primary_container": "#4F378B",
+    "on_primary_container": "#EADDFF",
+    "secondary": "#CCC2DC",
+    "on_secondary": "#332D41",
+    "secondary_container": "#4A4458",
+    "on_secondary_container": "#E8DEF8",
+    "tertiary": "#EFB8C8",
+    "on_tertiary": "#492532",
+    "tertiary_container": "#633B48",
+    "on_tertiary_container": "#FFD8E4",
+    "error": "#F2B8B5",
+    "on_error": "#601410",
+    "error_container": "#8C1D18",
+    "on_error_container": "#F9DEDC",
+    "surface": "#141218",
+    "on_surface": "#E6E0E9",
+    "on_surface_variant": "#CAC4D0",
+    "outline": "#938F99",
+    "outline_variant": "#49454F",
+    "shadow": "#000000",
+    "inverse_surface": "#E6E0E9",
+    "on_inverse_surface": "#322F35",
+    "inverse_primary": "#6750A4",
+    "surface_dim": "#141218",
+    "surface_bright": "#3B383E",
+    "surface_container_lowest": "#0F0D13",
+    "surface_container_low": "#1D1B20",
+    "surface_container": "#211F26",
+    "surface_container_high": "#2B2930",
+    "surface_container_highest": "#36343B",
+}
 
 
 class PreviewFinished(RuntimeError):
@@ -154,6 +188,20 @@ def material_light_theme() -> ft.Theme:
         card_bgcolor=MATERIAL_LIGHT_COLORS["surface_container"],
         divider_color=MATERIAL_LIGHT_COLORS["outline_variant"],
         hint_color=MATERIAL_LIGHT_COLORS["on_surface_variant"],
+    )
+
+
+def material_dark_theme() -> ft.Theme:
+    return ft.Theme(
+        color_scheme=ft.ColorScheme(**MATERIAL_DARK_COLORS),
+        use_material3=True,
+        font_family=PRIMARY_FONT,
+        text_theme=_app_text_theme(MATERIAL_DARK_COLORS["on_surface"]),
+        scaffold_bgcolor=MATERIAL_DARK_COLORS["surface"],
+        canvas_color=MATERIAL_DARK_COLORS["surface"],
+        card_bgcolor=MATERIAL_DARK_COLORS["surface_container"],
+        divider_color=MATERIAL_DARK_COLORS["outline_variant"],
+        hint_color=MATERIAL_DARK_COLORS["on_surface_variant"],
     )
 
 
@@ -460,12 +508,7 @@ class ConverterApp:
             current_locale=ft.Locale("zh", "CN"),
         )
         self.page.theme = material_light_theme()
-        self.page.dark_theme = ft.Theme(
-            color_scheme_seed=ft.Colors.INDIGO,
-            use_material3=True,
-            font_family=PRIMARY_FONT,
-            text_theme=_app_text_theme("#E6E1E5"),
-        )
+        self.page.dark_theme = material_dark_theme()
         self.page.padding = 0
         self.page.window.width = 1120
         self.page.window.height = 760
@@ -580,7 +623,7 @@ class ConverterApp:
             value=BUILTIN_PRESETS[0].name,
             options=[],
             on_select=self._apply_selected_preset,
-            expand=True,
+            col={"xs": 12, "md": 8},
         )
         self.preset_name_field = ft.TextField(label="新预设名称", expand=True)
         self._refresh_preset_options()
@@ -753,6 +796,7 @@ class ConverterApp:
     def _card(self, title: str, icon, controls, *, col=12) -> ft.Card:
         return ft.Card(
             variant=ft.CardVariant.FILLED,
+            bgcolor=ft.Colors.SURFACE_CONTAINER,
             col=col,
             content=ft.Container(
                 padding=20,
@@ -849,52 +893,95 @@ class ConverterApp:
             "转换参数",
             ft.Icons.TUNE,
             [
-                ft.Row(
+                ft.ResponsiveRow(
                     [
                         self.preset_dropdown,
-                        ft.IconButton(
-                            icon=ft.Icons.SAVE_AS,
-                            tooltip="保存当前参数为预设",
-                            on_click=self._save_preset_dialog,
-                        ),
-                        ft.IconButton(
-                            icon=ft.Icons.DELETE_OUTLINE,
-                            tooltip="删除用户预设",
-                            on_click=self._delete_selected_preset,
-                        ),
-                        ft.IconButton(
-                            icon=ft.Icons.RESTORE,
-                            tooltip="清除用户预设并恢复内置预设",
-                            on_click=self._reset_user_presets,
+                        ft.Row(
+                            [
+                                ft.IconButton(
+                                    icon=ft.Icons.SAVE_AS,
+                                    tooltip="保存当前参数为预设",
+                                    on_click=self._save_preset_dialog,
+                                ),
+                                ft.IconButton(
+                                    icon=ft.Icons.DELETE_OUTLINE,
+                                    tooltip="删除用户预设",
+                                    on_click=self._delete_selected_preset,
+                                ),
+                                ft.IconButton(
+                                    icon=ft.Icons.RESTORE,
+                                    tooltip="清除用户预设并恢复内置预设",
+                                    on_click=self._reset_user_presets,
+                                ),
+                            ],
+                            col={"xs": 12, "md": 4},
+                            alignment=ft.MainAxisAlignment.END,
                         ),
                     ],
-                    wrap=True,
+                    spacing=8,
+                    run_spacing=8,
                 ),
                 ft.ResponsiveRow(
                     [
-                        self.width_field,
-                        self.height_field,
-                        self.fps_field,
-                        self.skip_frames_field,
-                    ]
-                ),
-                self.fit_dropdown,
-                self.dither_control,
-                self.threshold_slider,
-                ft.Row(
-                    [
-                        ft.Text("自动阈值"),
-                        ft.OutlinedButton("标准", data="standard", on_click=self._auto_threshold_clicked),
-                        ft.OutlinedButton("保留暗部", data="dark-detail", on_click=self._auto_threshold_clicked),
-                        ft.OutlinedButton("减少噪点", data="noise-reduction", on_click=self._auto_threshold_clicked),
+                        ft.Column(
+                            [
+                                ft.Text("画面与时间", weight=ft.FontWeight.W_600),
+                                ft.ResponsiveRow(
+                                    [
+                                        self.width_field,
+                                        self.height_field,
+                                        self.fps_field,
+                                        self.skip_frames_field,
+                                    ]
+                                ),
+                                self.fit_dropdown,
+                                self.background_dropdown,
+                                self.target_dropdown,
+                            ],
+                            col={"xs": 12, "lg": 6},
+                            spacing=12,
+                        ),
+                        ft.Column(
+                            [
+                                ft.Text("黑白处理", weight=ft.FontWeight.W_600),
+                                self.dither_control,
+                                self.threshold_slider,
+                                ft.Row(
+                                    [
+                                        ft.Text("自动阈值"),
+                                        ft.OutlinedButton(
+                                            "标准",
+                                            data="standard",
+                                            on_click=self._auto_threshold_clicked,
+                                        ),
+                                        ft.OutlinedButton(
+                                            "保留暗部",
+                                            data="dark-detail",
+                                            on_click=self._auto_threshold_clicked,
+                                        ),
+                                        ft.OutlinedButton(
+                                            "减少噪点",
+                                            data="noise-reduction",
+                                            on_click=self._auto_threshold_clicked,
+                                        ),
+                                    ],
+                                    wrap=True,
+                                ),
+                                ft.Row([self.invert_switch, self.recursive_switch], wrap=True),
+                                self.force_switch,
+                                ft.OutlinedButton(
+                                    "刷新预览",
+                                    icon=ft.Icons.REFRESH,
+                                    on_click=self._refresh_preview,
+                                ),
+                            ],
+                            col={"xs": 12, "lg": 6},
+                            spacing=12,
+                        ),
                     ],
-                    wrap=True,
+                    spacing=16,
+                    run_spacing=16,
                 ),
-                self.background_dropdown,
-                self.target_dropdown,
-                ft.Row([self.invert_switch, self.recursive_switch], wrap=True),
-                self.force_switch,
-                ft.OutlinedButton("刷新预览", icon=ft.Icons.REFRESH, on_click=self._refresh_preview),
             ],
             col=12,
         )

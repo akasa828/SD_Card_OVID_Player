@@ -276,7 +276,18 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertNotIn('col={"xs": 12, "lg": 5}', source)
         preset_start = source.index("self.preset_dropdown = ft.Dropdown(")
         preset_end = source.index("self.preset_name_field", preset_start)
-        self.assertIn("expand=True", source[preset_start:preset_end])
+        preset_source = source[preset_start:preset_end]
+        self.assertNotIn("expand=True", preset_source)
+        self.assertIn('col={"xs": 12, "md": 8}', preset_source)
+        self.assertIn('ft.Text("画面与时间"', source)
+        self.assertIn('ft.Text("黑白处理"', source)
+
+    def test_dark_theme_uses_dark_card_surfaces(self) -> None:
+        theme = converter_gui.material_dark_theme()
+        colors = converter_gui.MATERIAL_DARK_COLORS
+        self.assertEqual(colors["surface"], theme.scaffold_bgcolor)
+        self.assertEqual(colors["surface_container"], theme.card_bgcolor)
+        self.assertEqual(colors["on_surface"], theme.text_theme.body_medium.color)
 
     def test_current_frame_can_be_rerendered_without_reopening_source(self) -> None:
         session = converter_gui.PreviewSession()
