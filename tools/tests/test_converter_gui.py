@@ -326,15 +326,14 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertEqual(96, session.options.threshold)
         self.assertTrue(session.options.invert)
 
-    def test_compact_navigation_matches_the_five_pages(self) -> None:
+    def test_compact_navigation_matches_the_four_pages(self) -> None:
         self.assertEqual(
-            ("转换", "队列", "播放器", "设置", "关于"),
+            ("转换", "播放器", "设置", "关于"),
             tuple(label for _, label in converter_gui.NAVIGATION_ITEMS),
         )
 
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.convert_page = object()
-        app.queue_page = object()
         app.player_page = object()
         app.settings_page = object()
         app.about_page = object()
@@ -350,6 +349,21 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertIs(app.convert_page, app.page_host.content)
         self.assertEqual(0, app.navigation_rail.selected_index)
         self.assertEqual(0, app.navigation_bar.selected_index)
+
+    def test_conversion_page_owns_the_task_list(self) -> None:
+        source = GUI_SOURCE.read_text(encoding="utf-8")
+        self.assertIn('"转换任务"', source)
+        self.assertIn('"转换所选"', source)
+        self.assertIn('"应用到已勾选项"', source)
+        self.assertNotIn("def _build_queue_page", source)
+        self.assertIn("allow_multiple=True", source)
+
+    def test_task_controls_use_independent_option_snapshots(self) -> None:
+        source = GUI_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("self.queue.replace_options(", source)
+        self.assertIn("source=job.options.source", source)
+        self.assertIn("trim_start_seconds=job.options.trim_start_seconds", source)
+        self.assertIn("jobs = self.queue.freeze_selected()", source)
 
     def test_windows_batch_accepts_supported_python_versions(self) -> None:
         source = BUILD_BATCH.read_text(encoding="utf-8")

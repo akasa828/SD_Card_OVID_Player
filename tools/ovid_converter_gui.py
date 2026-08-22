@@ -60,7 +60,6 @@ PRIMARY_FONT = "Google Sans Flex"
 SIMPLIFIED_CHINESE_FONT = "Noto Sans SC"
 NAVIGATION_ITEMS = (
     (ft.Icons.MOVIE, "转换"),
-    (ft.Icons.QUEUE_PLAY_NEXT, "队列"),
     (ft.Icons.PLAY_CIRCLE, "播放器"),
     (ft.Icons.SETTINGS, "设置"),
     (ft.Icons.INFO, "关于"),
@@ -483,14 +482,20 @@ class ConverterApp:
         self.settings = load_settings()
         self.preset_store = PresetStore()
         self.queue = ConversionQueue()
+        self.active_task_id: str | None = None
+        self.current_batch_ids: tuple[str, ...] = ()
+        self.stop_batch_requested = False
+        self.loading_task_controls = False
+        self.pending_trim_range: tuple[float, float | None] | None = None
+        self.batch_current_name = ""
+        self.batch_completed_count = 0
+        self.batch_total_count = 0
         self.logger = ConversionLogger()
         self.player = OvidPlaybackSession()
         self.source_info = None
         self.source_info_key: tuple[str, int, bool] | None = None
-        self.queue_runner_task: asyncio.Task | None = None
         self.queue_cancel_event = threading.Event()
         self.active_queue_job_id: str | None = None
-        self.cancel_event = threading.Event()
         self.preview = PreviewSession()
         self.preview_lock = asyncio.Lock()
         self.preview_revision = 0
@@ -549,7 +554,7 @@ class ConverterApp:
                 ft.IconButton(
                     icon=ft.Icons.INFO,
                     tooltip="关于",
-                    on_click=lambda _: self._show_page(4),
+                    on_click=lambda _: self._show_page(3),
                 ),
             ],
         )
@@ -714,12 +719,12 @@ class ConverterApp:
         self.progress_bar = ft.ProgressBar(value=0, visible=False)
         self.progress_text = ft.Text("准备就绪", color=ft.Colors.ON_SURFACE_VARIANT)
         self.convert_button = ft.FilledButton(
-            "生成 OVID",
+            "转换所选",
             icon=ft.Icons.MOVIE,
             on_click=self._start_conversion,
         )
         self.cancel_button = ft.OutlinedButton(
-            "取消",
+            "停止本轮",
             icon=ft.Icons.CANCEL,
             on_click=self._cancel_conversion,
             visible=False,
@@ -727,11 +732,15 @@ class ConverterApp:
 
         self.queue_list = ft.Column(spacing=8)
         self.queue_status = ft.Text("队列为空", color=ft.Colors.ON_SURFACE_VARIANT)
-        self.queue_run_button = ft.FilledButton(
-            "开始队列", icon=ft.Icons.PLAY_ARROW, on_click=self._start_queue
+        self.select_all_button = ft.TextButton("全选", on_click=self._select_all_tasks)
+        self.select_none_button = ft.TextButton("全不选", on_click=self._select_no_tasks)
+        self.clear_completed_button = ft.TextButton(
+            "清理已完成", on_click=self._clear_completed_jobs
         )
-        self.queue_cancel_button = ft.OutlinedButton(
-            "取消当前任务", icon=ft.Icons.CANCEL, on_click=self._cancel_queue_job
+        self.apply_selected_button = ft.OutlinedButton(
+            "应用到已勾选项",
+            icon=ft.Icons.COPY_ALL,
+            on_click=self._apply_active_options_to_selected,
         )
 
         self.player_path = ft.TextField(label="OVID 文件", read_only=True, expand=True)
@@ -776,7 +785,6 @@ class ConverterApp:
         )
 
         self.convert_page = self._build_convert_page()
-        self.queue_page = self._build_queue_page()
         self.player_page = self._build_player_page()
         self.settings_page = self._build_settings_page()
         self.about_page = self._build_about_page()
@@ -832,11 +840,12 @@ class ConverterApp:
             on_change=on_change,
         )
 
-    def _card(self, title: str, icon, controls, *, col=12) -> ft.Card:
+    def _card(self, title: str, icon, controls, *, col=12, key=None) -> ft.Card:
         return ft.Card(
             variant=ft.CardVariant.FILLED,
             bgcolor=ft.Colors.SURFACE_CONTAINER,
             col=col,
+            key=key,
             content=ft.Container(
                 padding=20,
                 content=ft.Column(
@@ -854,7 +863,6 @@ class ConverterApp:
             [
                 ft.OutlinedButton("选择文件", icon=ft.Icons.INSERT_DRIVE_FILE, on_click=self._choose_file),
                 ft.OutlinedButton("选择图片目录", icon=ft.Icons.FOLDER_OPEN, on_click=self._choose_directory),
-                ft.OutlinedButton("批量选择", icon=ft.Icons.PLAYLIST_ADD, on_click=self._choose_queue_files),
             ],
             wrap=True,
         )
@@ -874,6 +882,7 @@ class ConverterApp:
                 output_actions,
             ],
             col=12,
+            key="source-card",
         )
         preview_card = self._card(
             "画面对比",
@@ -928,6 +937,7 @@ class ConverterApp:
                 self.trim_label,
             ],
             col=12,
+            key="preview-card",
         )
         parameter_card = self._card(
             "转换参数",
@@ -1022,25 +1032,39 @@ class ConverterApp:
                     spacing=16,
                     run_spacing=16,
                 ),
+                self.apply_selected_button,
             ],
             col=12,
+            key="parameter-card",
         )
         action_card = self._card(
-            "转换进度",
+            "转换任务",
             ft.Icons.DATA_SAVER_ON,
             [
                 self.progress_bar,
                 self.progress_text,
                 ft.Row(
                     [
-                        self.convert_button,
                         ft.OutlinedButton(
-                            "加入队列", icon=ft.Icons.ADD_TO_QUEUE, on_click=self._add_current_to_queue
+                            "添加文件",
+                            icon=ft.Icons.PLAYLIST_ADD,
+                            on_click=self._choose_file,
                         ),
+                        ft.OutlinedButton(
+                            "添加图片目录",
+                            icon=ft.Icons.CREATE_NEW_FOLDER,
+                            on_click=self._choose_directory,
+                        ),
+                        self.select_all_button,
+                        self.select_none_button,
+                        self.convert_button,
                         self.cancel_button,
+                        self.clear_completed_button,
                     ],
                     wrap=True,
                 ),
+                self.queue_status,
+                self.queue_list,
             ],
             col=12,
         )
@@ -1048,28 +1072,6 @@ class ConverterApp:
             [
                 ft.Text("无需 IrfanView、Img2Lcd 或中间 .c/.h 文件。", color=ft.Colors.ON_SURFACE_VARIANT),
                 ft.ResponsiveRow([input_card, preview_card, parameter_card, action_card], spacing=16, run_spacing=16),
-            ],
-            scroll=ft.ScrollMode.AUTO,
-            expand=True,
-        )
-
-    def _build_queue_page(self):
-        return ft.Column(
-            [
-                ft.Text("批量转换队列", size=28, weight=ft.FontWeight.W_600),
-                ft.Row(
-                    [
-                        ft.OutlinedButton(
-                            "添加文件", icon=ft.Icons.PLAYLIST_ADD, on_click=self._choose_queue_files
-                        ),
-                        self.queue_run_button,
-                        self.queue_cancel_button,
-                        ft.TextButton("清理已完成", on_click=self._clear_completed_jobs),
-                    ],
-                    wrap=True,
-                ),
-                self.queue_status,
-                self._card("任务", ft.Icons.QUEUE_PLAY_NEXT, [self.queue_list]),
             ],
             scroll=ft.ScrollMode.AUTO,
             expand=True,
@@ -1268,41 +1270,42 @@ class ConverterApp:
 
     async def _choose_file(self, _):
         files = await self.file_picker.pick_files(
-            dialog_title="选择图片、GIF 或视频",
-            allowed_extensions=sorted({suffix[1:] for suffix in IMAGE_SUFFIXES | VIDEO_SUFFIXES}),
-            allow_multiple=False,
-        )
-        if files and files[0].path:
-            self._set_source(Path(files[0].path))
-            await self._load_first_preview()
-
-    async def _choose_queue_files(self, _):
-        files = await self.file_picker.pick_files(
-            dialog_title="选择要加入队列的图片、GIF 或视频",
+            dialog_title="选择一个或多个图片、GIF 或视频",
             allowed_extensions=sorted({suffix[1:] for suffix in IMAGE_SUFFIXES | VIDEO_SUFFIXES}),
             allow_multiple=True,
         )
-        if not files:
+        if files:
+            await self._add_sources(Path(item.path) for item in files if item.path)
+
+    async def _choose_queue_files(self, _):
+        await self._choose_file(None)
+
+    async def _add_sources(self, sources) -> None:
+        sources = [Path(source) for source in sources]
+        if not sources:
             return
         output_dir = (
             Path(self.settings.output_directory)
             if self.settings.output_directory
-            else Path(files[0].path).parent
+            else sources[0].parent
         )
-        added = 0
-        for item in files:
-            if not item.path:
+        added: list[QueueJob] = []
+        for source in sources:
+            if not is_supported_source(source):
                 continue
-            source = Path(item.path)
             output = output_dir / f"{source.stem}.BIN"
-            self.queue.add(
+            job = self.queue.add(
                 self._options_for_source(source, output, use_current_trim=False),
                 target_profile=self.target_dropdown.value,
             )
-            added += 1
+            added.append(job)
+            self.logger.event("task", f"added {job.options.source} -> {job.options.output}")
         self._refresh_queue_view()
         if added:
-            self._show_page(1)
+            self._show_page(0)
+            await self._activate_task(added[0].id, scroll_target="preview-card")
+            if len(added) > 1:
+                self._show_notice(f"已添加 {len(added)} 个转换任务")
 
     async def _on_system_drop(self, event) -> None:
         paths = parse_drop_paths(getattr(event, "data", None))
@@ -1319,45 +1322,22 @@ class ConverterApp:
         if not paths:
             return
 
-        if len(paths) == 1:
-            path = paths[0]
-            if path.suffix.lower() == ".bin":
-                await self._open_player_path(path)
-                return
-            self._set_source(path)
-            await self._load_first_preview()
+        if len(paths) == 1 and paths[0].suffix.lower() == ".bin":
+            self._open_player_path(paths[0], show_page=True)
             return
 
         sources = [path for path in paths if is_supported_source(path)]
         if not sources:
             self._show_notice("批量拖放仅支持图片、GIF、视频或图片目录")
             return
-        output_dir = (
-            Path(self.settings.output_directory)
-            if self.settings.output_directory
-            else sources[0].parent
-        )
-        for source in sources:
-            output = output_dir / f"{source.stem}.BIN"
-            self.queue.add(
-                self._options_for_source(source, output, use_current_trim=False),
-                target_profile=self.target_dropdown.value,
-            )
-        self._refresh_queue_view()
-        self._show_page(1)
-        self._show_notice(f"已将 {len(sources)} 个素材加入队列")
+        await self._add_sources(sources)
 
-    def _add_current_to_queue(self, _):
-        try:
-            job = self.queue.add(
-                self._options(),
-                target_profile=self.target_dropdown.value,
-            )
-            self.logger.event("queue", f"added {job.options.source} -> {job.options.output}")
-            self._refresh_queue_view()
-            self._show_page(1)
-        except Exception as exc:
-            self._show_error("无法加入队列", exc)
+    def _task_time_range(self, options: ConversionOptions) -> str:
+        start = format_timestamp(options.trim_start_seconds)
+        end = format_timestamp(options.trim_end_seconds)
+        if options.trim_end_seconds is None:
+            return "完整素材"
+        return f"{start}–{end}"
 
     def _queue_state_text(self, job: QueueJob) -> str:
         names = {
@@ -1378,9 +1358,17 @@ class ConverterApp:
 
     def _refresh_queue_view(self) -> None:
         jobs = self.queue.snapshot()
-        controls = []
+        controls: list[ft.Control] = []
         for job in jobs:
-            actions = []
+            actions: list[ft.Control] = [
+                ft.IconButton(
+                    icon=ft.Icons.VISIBILITY_OUTLINED,
+                    tooltip="在上方预览",
+                    on_click=lambda _, job_id=job.id: asyncio.create_task(
+                        self._activate_task(job_id, scroll_target="preview-card")
+                    ),
+                )
+            ]
             if job.state in {"failed", "cancelled"}:
                 actions.append(
                     ft.IconButton(
@@ -1389,7 +1377,7 @@ class ConverterApp:
                         on_click=lambda _, job_id=job.id: self._retry_queue_job(job_id),
                     )
                 )
-            if job.state != "running":
+            if job.state != "running" and not job.frozen:
                 actions.append(
                     ft.IconButton(
                         icon=ft.Icons.DELETE_OUTLINE,
@@ -1397,140 +1385,109 @@ class ConverterApp:
                         on_click=lambda _, job_id=job.id: self._remove_queue_job(job_id),
                     )
                 )
+            progress = job.progress.ratio if job.progress is not None else 0
+            details = (
+                f"{job.options.width}×{job.options.height} · {job.options.fps} FPS · "
+                f"{self._task_time_range(job.options)}"
+            )
+            clickable = ft.Container(
+                expand=True,
+                padding=ft.Padding.symmetric(vertical=4),
+                on_click=lambda _, job_id=job.id: asyncio.create_task(
+                    self._activate_task(job_id, scroll_target="parameter-card")
+                ),
+                content=ft.Column(
+                    [
+                        ft.Text(job.options.source.name, weight=ft.FontWeight.W_600),
+                        ft.Text(details, size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                        ft.Text(self._queue_state_text(job), color=ft.Colors.ON_SURFACE_VARIANT),
+                        ft.ProgressBar(value=progress, visible=job.state == "running"),
+                    ],
+                    spacing=3,
+                ),
+            )
             controls.append(
                 ft.Card(
                     content=ft.Container(
                         padding=12,
+                        border=(
+                            ft.Border.all(2, ft.Colors.PRIMARY)
+                            if job.id == self.active_task_id
+                            else None
+                        ),
+                        border_radius=12,
                         content=ft.Row(
                             [
-                                ft.Column(
-                                    [
-                                        ft.Text(job.options.source.name, weight=ft.FontWeight.W_500),
-                                        ft.Text(
-                                            self._queue_state_text(job),
-                                            color=ft.Colors.ON_SURFACE_VARIANT,
-                                        ),
-                                        ft.Text(
-                                            str(job.options.output),
-                                            size=12,
-                                            color=ft.Colors.ON_SURFACE_VARIANT,
-                                        ),
-                                    ],
-                                    expand=True,
-                                    spacing=2,
+                                ft.Checkbox(
+                                    value=job.selected,
+                                    disabled=job.frozen or job.state == "running",
+                                    tooltip="勾选后由“转换所选”处理",
+                                    on_change=lambda event, job_id=job.id: self._set_task_selected(
+                                        job_id, bool(event.control.value)
+                                    ),
                                 ),
+                                clickable,
                                 *actions,
-                            ]
+                            ],
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
                     )
                 )
             )
         self.queue_list.controls = controls
         if not jobs:
-            self.queue_status.value = "队列为空"
+            self.queue_status.value = "尚未添加转换任务"
         else:
             completed = sum(job.state == "completed" for job in jobs)
-            self.queue_status.value = f"共 {len(jobs)} 项 · 已完成 {completed} 项"
+            selected = sum(job.selected for job in jobs)
+            self.queue_status.value = (
+                f"共 {len(jobs)} 项 · 已勾选 {selected} 项 · 已完成 {completed} 项"
+            )
         self.page.update(self.queue_list, self.queue_status)
 
-    async def _start_queue(self, _):
-        if self.queue_runner_task is not None and not self.queue_runner_task.done():
-            return
-        if self.queue.next_queued() is None:
-            self._show_error("无法开始队列", ValueError("队列中没有等待任务"))
-            return
-        self.queue_runner_task = asyncio.create_task(self._run_queue())
+    def _set_task_selected(self, job_id: str, selected: bool) -> None:
+        self.queue.set_selected(job_id, selected)
+        self._refresh_queue_view()
 
-    async def _run_queue(self) -> None:
-        self.queue_run_button.disabled = True
-        self.page.update(self.queue_run_button)
-        try:
-            while True:
-                job = self.queue.next_queued()
-                if job is None:
-                    break
-                self.active_queue_job_id = job.id
-                self.queue_cancel_event.clear()
-                self.queue.update(job.id, state="running")
-                self._refresh_queue_view()
-                self.logger.event("queue", f"start {job.options.source}")
-                try:
-                    info = await asyncio.to_thread(probe_source, job.options)
-                    if job.options.source.suffix.lower() in VIDEO_SUFFIXES:
-                        self.logger.event("ffmpeg", ffmpeg_version())
-                    report = await asyncio.to_thread(
-                        check_compatibility,
-                        job.options,
-                        info,
-                        job.target_profile,
-                    )
-                    if not report.can_convert:
-                        raise ValueError(
-                            "; ".join(
-                                issue.message for issue in report.issues if issue.severity == "error"
-                            )
-                        )
+    def _select_all_tasks(self, _) -> None:
+        for job in self.queue.snapshot():
+            self.queue.set_selected(job.id, True)
+        self._refresh_queue_view()
 
-                    def progress(value: ConversionProgress) -> None:
-                        self.queue.update(job.id, progress=value)
-
-                    worker = asyncio.create_task(
-                        asyncio.to_thread(
-                            convert_media,
-                            job.options,
-                            progress=progress,
-                            cancelled=self.queue_cancel_event.is_set,
-                            source_info=info,
-                        )
-                    )
-                    while not worker.done():
-                        self._refresh_queue_view()
-                        await asyncio.sleep(0.1)
-                    summary = await worker
-                    self.queue.update(job.id, state="completed", summary=summary)
-                    speed = (
-                        f" average_fps={job.progress.average_fps:.2f}"
-                        if job.progress is not None
-                        else ""
-                    )
-                    self.logger.event("queue", f"completed {summary.path}{speed}")
-                except ConversionCancelled:
-                    self.queue.update(job.id, state="cancelled")
-                    self.logger.event("queue", f"cancelled {job.options.source}")
-                except Exception as exc:
-                    self.queue.update(job.id, state="failed", error=str(exc))
-                    self.logger.event("queue", f"failed {job.options.source}: {exc}", level=40)
-                finally:
-                    self.active_queue_job_id = None
-                    self._refresh_queue_view()
-        finally:
-            self.queue_run_button.disabled = False
-            self.page.update(self.queue_run_button)
-
-    def _cancel_queue_job(self, _):
-        if self.active_queue_job_id is not None:
-            self.queue_cancel_event.set()
+    def _select_no_tasks(self, _) -> None:
+        for job in self.queue.snapshot():
+            self.queue.set_selected(job.id, False)
+        self._refresh_queue_view()
 
     def _retry_queue_job(self, job_id: str) -> None:
         self.queue.retry(job_id)
+        self.queue.set_selected(job_id, True)
         self._refresh_queue_view()
 
     def _remove_queue_job(self, job_id: str) -> None:
         try:
             self.queue.remove(job_id)
+            if self.active_task_id == job_id:
+                self.active_task_id = None
+                remaining = self.queue.snapshot()
+                if remaining:
+                    asyncio.create_task(self._activate_task(remaining[0].id))
             self._refresh_queue_view()
         except Exception as exc:
             self._show_error("无法移除任务", exc)
 
     def _clear_completed_jobs(self, _):
         self.queue.clear_completed()
+        if self.active_task_id and not any(
+            job.id == self.active_task_id for job in self.queue.snapshot()
+        ):
+            self.active_task_id = None
         self._refresh_queue_view()
 
     async def _choose_directory(self, _):
         selected = await self.file_picker.get_directory_path(dialog_title="选择图片帧目录")
         if selected:
-            self._set_source(Path(selected))
-            await self._load_first_preview()
+            await self._add_sources([Path(selected)])
 
     async def _choose_output(self, _):
         source = Path(self.source_field.value) if self.source_field.value else None
@@ -1546,7 +1503,8 @@ class ConverterApp:
             if path.suffix.casefold() != ".bin":
                 path = path.with_suffix(".BIN")
             self.output_field.value = str(path)
-            self.page.update()
+            self._save_active_task_options()
+            self.page.update(self.output_field)
 
     async def _choose_ovid_file(self, _):
         files = await self.file_picker.pick_files(
@@ -1572,7 +1530,7 @@ class ConverterApp:
         self.player_play_button.icon = ft.Icons.PLAY_ARROW
         self._draw_player_frame(0)
         if show_page:
-            self._show_page(2)
+            self._show_page(1)
 
     def _draw_player_frame(self, index: int) -> None:
         frame = self.player.seek(
@@ -1718,7 +1676,14 @@ class ConverterApp:
             except Exception as exc:
                 self._show_error("无法导出日志", exc)
 
-    def _set_source(self, source: Path) -> None:
+    def _set_source(
+        self,
+        source: Path,
+        *,
+        output: Path | None = None,
+        trim_start: float = 0.0,
+        trim_end: float | None = None,
+    ) -> None:
         self.preview_playing = False
         self.preview_playback_revision += 1
         self.preview_render_revision += 1
@@ -1726,17 +1691,130 @@ class ConverterApp:
         self.preview_play_button.icon = ft.Icons.PLAY_ARROW
         self.source_info = None
         self.source_info_key = None
-        self.trim_slider.disabled = True
+        self.pending_trim_range = (trim_start, trim_end)
+        self.trim_slider.disabled = trim_end is None
         self.trim_slider.min = 0
-        self.trim_slider.max = 1
-        self.trim_slider.start_value = 0
-        self.trim_slider.end_value = 1
+        self.trim_slider.max = max(1.0, trim_end or 1.0)
+        self.trim_slider.start_value = max(0.0, trim_start)
+        self.trim_slider.end_value = max(self.trim_slider.start_value, trim_end or 1.0)
         self.trim_label.value = "正在读取素材时间轴…"
         self.source_field.value = str(source)
         output_dir = Path(self.settings.output_directory) if self.settings.output_directory else source.parent
-        self.output_field.value = str(output_dir / f"{source.stem}.BIN")
+        self.output_field.value = str(output or (output_dir / f"{source.stem}.BIN"))
         self.preview_label.value = "正在载入预览…"
         self.page.update()
+
+    def _load_job_controls(self, job: QueueJob) -> None:
+        options = job.options
+        self.loading_task_controls = True
+        try:
+            self.width_field.value = str(options.width)
+            self.height_field.value = str(options.height)
+            self.fps_field.value = str(options.fps)
+            self.skip_frames_field.value = str(options.skip_frames)
+            self.fit_dropdown.value = options.fit
+            self.dither_control.selected = [options.dither]
+            self.threshold_slider.value = options.threshold
+            self.threshold_slider.disabled = options.dither != "threshold"
+            self.invert_switch.value = options.invert
+            self.background_dropdown.value = options.background
+            self.recursive_switch.value = options.recursive
+            self.force_switch.value = options.force
+            self.target_dropdown.value = job.target_profile
+            self.settings.workers = options.workers
+            self.settings.fast_video = options.fast_video
+            self._set_source(
+                options.source,
+                output=options.output,
+                trim_start=options.trim_start_seconds,
+                trim_end=options.trim_end_seconds,
+            )
+        finally:
+            self.loading_task_controls = False
+
+    async def _activate_task(self, job_id: str, *, scroll_target: str | None = None) -> None:
+        if self.active_task_id != job_id:
+            self._save_active_task_options()
+        try:
+            job = self.queue.find(job_id)
+        except KeyError:
+            return
+        self.active_task_id = job.id
+        self._load_job_controls(job)
+        self._set_editor_locked(job.frozen or job.state == "running")
+        self._refresh_queue_view()
+        await self._load_first_preview()
+        if scroll_target:
+            with contextlib.suppress(Exception):
+                await self.convert_page.scroll_to(key=scroll_target, duration=250)
+
+    def _save_active_task_options(self) -> bool:
+        if getattr(self, "loading_task_controls", False) or not getattr(
+            self, "active_task_id", None
+        ):
+            return False
+        try:
+            job = self.queue.find(self.active_task_id)
+            if job.state == "running" or job.frozen:
+                return False
+            self.queue.replace_options(
+                job.id,
+                self._options(),
+                target_profile=self.target_dropdown.value,
+            )
+            return True
+        except (KeyError, OSError, ValueError):
+            return False
+
+    def _set_editor_locked(self, locked: bool) -> None:
+        controls = (
+            self.width_field,
+            self.height_field,
+            self.fps_field,
+            self.skip_frames_field,
+            self.fit_dropdown,
+            self.background_dropdown,
+            self.dither_control,
+            self.invert_switch,
+            self.recursive_switch,
+            self.force_switch,
+            self.target_dropdown,
+            self.preset_dropdown,
+            self.apply_selected_button,
+        )
+        for control in controls:
+            control.disabled = locked
+        self.threshold_slider.disabled = locked or self.dither_control.selected[0] != "threshold"
+
+    def _apply_active_options_to_selected(self, _) -> None:
+        if not self.active_task_id:
+            self._show_notice("请先选择一个任务")
+            return
+        self._save_active_task_options()
+        try:
+            active = self.queue.find(self.active_task_id)
+        except KeyError:
+            return
+        changed = 0
+        for job in self.queue.snapshot():
+            if not job.selected or job.id == active.id or job.frozen or job.state == "running":
+                continue
+            copied = replace(
+                active.options,
+                source=job.options.source,
+                output=job.options.output,
+                trim_start_seconds=job.options.trim_start_seconds,
+                trim_end_seconds=job.options.trim_end_seconds,
+                skip_frames=job.options.skip_frames,
+            )
+            self.queue.replace_options(
+                job.id,
+                copied,
+                target_profile=active.target_profile,
+            )
+            changed += 1
+        self._refresh_queue_view()
+        self._show_notice(f"已将参数应用到 {changed} 个勾选任务")
 
     async def _source_info_for_options(self, options: ConversionOptions):
         key = (str(options.source.resolve()), options.fps, options.recursive)
@@ -1919,6 +1997,7 @@ class ConverterApp:
             f"{format_timestamp(self.source_info.duration_seconds if self.source_info else None)}"
         )
         self.page.update(self.preview_time_label)
+        seek_hint = asyncio.create_task(self._show_seek_hint_after(revision))
         try:
             options = self._options(require_output=False)
             position = max(float(self.trim_slider.start_value), float(event.control.value))
@@ -1945,10 +2024,19 @@ class ConverterApp:
             if revision == self.preview_revision:
                 self._show_error("无法跳转预览", exc)
         finally:
+            seek_hint.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await seek_hint
             self.preview_timeline_dragging = False
             if self.resume_preview_after_drag and revision == self.preview_revision:
                 self.resume_preview_after_drag = False
                 await self._toggle_preview_playback(None)
+
+    async def _show_seek_hint_after(self, revision: int) -> None:
+        await asyncio.sleep(0.15)
+        if revision == self.preview_revision:
+            self.preview_label.value = "正在定位…"
+            self.page.update(self.preview_label)
 
     async def _toggle_preview_playback(self, _):
         if self.preview_playing:
@@ -1989,116 +2077,147 @@ class ConverterApp:
     async def _start_conversion(self, _):
         if self.busy:
             return
-        try:
-            options = self._options()
-            options.validate()
-            info = await self._source_info_for_options(options)
-            report = await asyncio.to_thread(
-                check_compatibility,
-                options,
-                info,
-                self.target_dropdown.value,
-            )
-            if not report.can_convert:
-                errors = "\n".join(
-                    f"• {issue.message}" for issue in report.issues if issue.severity == "error"
-                )
-                raise ValueError(errors)
-            warnings = [issue.message for issue in report.issues if issue.severity == "warning"]
-            if warnings:
-                self._show_notice("兼容性提示：" + "；".join(warnings))
-        except Exception as exc:
-            self._show_error("无法开始转换", exc)
+        self._save_active_task_options()
+        jobs = self.queue.freeze_selected()
+        if not jobs:
+            self._show_error("无法开始转换", ValueError("请先添加并勾选至少一个任务"))
             return
-
+        if self.active_task_id and any(job.id == self.active_task_id for job in jobs):
+            self._set_editor_locked(True)
         self.busy = True
+        self.current_batch_ids = tuple(job.id for job in jobs)
+        self.stop_batch_requested = False
+        self.batch_current_name = ""
+        self.batch_completed_count = 0
+        self.batch_total_count = len(jobs)
         self.conversion_revision += 1
         revision = self.conversion_revision
         self.latest_conversion_progress = None
         self.progress_display_ratio = 0.0
         self.progress_finish_deadline = None
         self.progress_finish_event = asyncio.Event()
-        self.cancel_event.clear()
+        self.queue_cancel_event.clear()
         self.convert_button.disabled = True
         self.cancel_button.visible = True
         self.progress_bar.visible = True
-        self.progress_bar.value = 0 if info.frame_count else None
-        self.progress_text.value = "正在准备转换…"
+        self.progress_bar.value = 0
+        self.progress_text.value = f"正在准备 {len(jobs)} 个任务…"
         self.page.update()
-        self.logger.event(
-            "convert",
-            f"start source={options.source} output={options.output} "
-            f"size={options.width}x{options.height} fps={options.fps} "
-            f"workers={options.workers or 'auto'} fast_video={options.fast_video}",
-        )
-        if options.source.suffix.lower() in VIDEO_SUFFIXES:
-            self.logger.event("ffmpeg", ffmpeg_version())
-        loop = asyncio.get_running_loop()
         self.progress_render_task = asyncio.create_task(
             self._render_conversion_progress(revision, self.progress_finish_event)
         )
-
-        def progress(value: ConversionProgress) -> None:
-            # A single assignment under the GIL is enough here. The renderer
-            # samples only the newest value, so a fast converter cannot flood
-            # the asyncio event queue with one callback per frame.
-            self.latest_conversion_progress = (revision, value)
-
+        completed = 0
+        last_output: Path | None = None
         try:
-            summary = await asyncio.to_thread(
-                convert_media,
-                options,
-                progress=progress,
-                cancelled=self.cancel_event.is_set,
-                source_info=info,
-            )
-            final_speed = (
-                self.latest_conversion_progress[1].average_fps
-                if self.latest_conversion_progress is not None
-                and self.latest_conversion_progress[0] == revision
-                else 0.0
-            )
-            self.latest_conversion_progress = (
-                revision,
-                ConversionProgress(summary.frame_count, summary.frame_count, summary.file_bytes),
-            )
-            self.progress_finish_deadline = loop.time() + PROGRESS_FINISH_SECONDS
-            try:
-                await asyncio.wait_for(
-                    self.progress_finish_event.wait(),
-                    timeout=PROGRESS_FINISH_SECONDS + 0.1,
+            for job in jobs:
+                if self.stop_batch_requested:
+                    break
+                self.active_queue_job_id = job.id
+                self.batch_current_name = job.options.source.name
+                self.batch_completed_count = completed
+                self.queue_cancel_event.clear()
+                self.queue.update(job.id, state="running", error="")
+                self._refresh_queue_view()
+                self.logger.event("convert", f"start {job.options.source} -> {job.options.output}")
+                try:
+                    job.options.validate()
+                    info = await asyncio.to_thread(probe_source, job.options)
+                    report = await asyncio.to_thread(
+                        check_compatibility,
+                        job.options,
+                        info,
+                        job.target_profile,
+                    )
+                    errors = [
+                        issue.message for issue in report.issues if issue.severity == "error"
+                    ]
+                    if errors:
+                        raise ValueError("；".join(errors))
+                    if job.options.source.suffix.lower() in VIDEO_SUFFIXES:
+                        self.logger.event("ffmpeg", ffmpeg_version())
+
+                    def progress(value: ConversionProgress, *, current_job=job) -> None:
+                        self.queue.update(current_job.id, progress=value)
+                        ratio = value.ratio
+                        aggregate = None if ratio is None else (completed + ratio) / len(jobs)
+                        self.latest_conversion_progress = (
+                            revision,
+                            ConversionProgress(
+                                round(aggregate * 1000) if aggregate is not None else completed,
+                                1000 if aggregate is not None else None,
+                                value.output_bytes,
+                                value.elapsed_seconds,
+                                value.current_fps,
+                                value.average_fps,
+                                value.remaining_seconds,
+                            ),
+                        )
+
+                    worker = asyncio.create_task(
+                        asyncio.to_thread(
+                            convert_media,
+                            job.options,
+                            progress=progress,
+                            cancelled=self.queue_cancel_event.is_set,
+                            source_info=info,
+                        )
+                    )
+                    while not worker.done():
+                        self._refresh_queue_view()
+                        await asyncio.sleep(0.1)
+                    summary = await worker
+                    self.queue.update(job.id, state="completed", summary=summary)
+                    completed += 1
+                    self.batch_completed_count = completed
+                    last_output = summary.path
+                    self.logger.event("convert", f"completed {summary.path}")
+                except ConversionCancelled:
+                    self.queue.update(job.id, state="cancelled")
+                    self.logger.event("convert", f"cancelled {job.options.source}")
+                    if self.stop_batch_requested:
+                        break
+                except Exception as exc:
+                    self.queue.update(job.id, state="failed", error=str(exc))
+                    self.logger.event("convert", f"failed {job.options.source}: {exc}", level=40)
+                finally:
+                    self.queue.unfreeze(job.id)
+                    self.active_queue_job_id = None
+                    self._refresh_queue_view()
+
+            if not self.stop_batch_requested:
+                loop = asyncio.get_running_loop()
+                self.latest_conversion_progress = (
+                    revision,
+                    ConversionProgress(1000, 1000, 0),
                 )
-            except TimeoutError:
-                self.progress_display_ratio = 1.0
-            self.progress_bar.value = 1
-            self.progress_text.value = (
-                f"完成：{summary.frame_count} 帧 · {human_size(summary.file_bytes)} · {summary.path.name}"
-            )
-            if self.page_index == 0:
-                self.page.update(self.progress_bar, self.progress_text)
-            self._show_message("转换完成", f"OVID 文件已保存到：\n{summary.path}")
-            self.logger.event(
-                "convert",
-                f"completed frames={summary.frame_count} bytes={summary.file_bytes} "
-                f"average_fps={final_speed:.2f} path={summary.path}",
-            )
-            self._open_player_path(summary.path, show_page=False)
-        except ConversionCancelled:
-            self.progress_text.value = "转换已取消，临时文件已清理"
-            if self.page_index == 0:
-                self.page.update(self.progress_text)
-            self.logger.event("convert", "cancelled")
-        except Exception as exc:
-            self.progress_text.value = "转换失败"
-            if self.page_index == 0:
-                self.page.update(self.progress_text)
-            self._show_error("转换失败", exc)
-            self.logger.event("convert", f"failed: {exc}", level=40)
+                self.progress_finish_deadline = loop.time() + PROGRESS_FINISH_SECONDS
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        self.progress_finish_event.wait(),
+                        timeout=PROGRESS_FINISH_SECONDS + 0.1,
+                    )
+                self.progress_bar.value = 1
+                self.progress_text.value = f"本轮完成：{completed}/{len(jobs)} 个任务"
+                if last_output is not None:
+                    self._open_player_path(last_output, show_page=False)
+                self._show_notice(f"本轮转换完成：{completed}/{len(jobs)} 个任务")
+            else:
+                self.progress_text.value = "本轮已停止，未开始的任务仍在等待"
         finally:
+            for job in jobs:
+                if job.frozen:
+                    self.queue.unfreeze(job.id)
             self.busy = False
+            self.current_batch_ids = ()
+            self.active_queue_job_id = None
             self.convert_button.disabled = False
             self.cancel_button.visible = False
+            if self.active_task_id:
+                with contextlib.suppress(KeyError):
+                    active = self.queue.find(self.active_task_id)
+                    self._set_editor_locked(active.frozen or active.state == "running")
             await self._stop_progress_renderer()
+            self._refresh_queue_view()
             self.page.update()
 
     async def _render_conversion_progress(
@@ -2140,6 +2259,9 @@ class ConverterApp:
 
                     if target is None:
                         text = (
+                            f"{getattr(self, 'batch_current_name', '')} · "
+                            f"已完成 {getattr(self, 'batch_completed_count', 0)}/"
+                            f"{getattr(self, 'batch_total_count', 0)} 项 · "
                             f"已转换 {value.completed_frames} 帧 · "
                             f"{human_size(value.output_bytes)} · "
                             f"{value.current_fps:.1f} FPS"
@@ -2151,8 +2273,10 @@ class ConverterApp:
                             else ""
                         )
                         text = (
-                            f"{target * 100:.1f}% · "
-                            f"{value.completed_frames}/{value.total_frames} 帧 · "
+                            f"{getattr(self, 'batch_current_name', '')} · "
+                            f"已完成 {getattr(self, 'batch_completed_count', 0)}/"
+                            f"{getattr(self, 'batch_total_count', 0)} 项 · "
+                            f"总进度 {target * 100:.1f}% · "
                             f"{human_size(value.output_bytes)} · "
                             f"{value.current_fps:.1f}/{value.average_fps:.1f} FPS{eta}"
                         )
@@ -2188,8 +2312,9 @@ class ConverterApp:
             await task
 
     def _cancel_conversion(self, _):
-        self.cancel_event.set()
-        self.progress_text.value = "正在取消…"
+        self.stop_batch_requested = True
+        self.queue_cancel_event.set()
+        self.progress_text.value = "正在停止本轮…"
         if self.page_index == 0:
             self.page.update(self.progress_text)
 
@@ -2214,8 +2339,15 @@ class ConverterApp:
         self.trim_slider.disabled = False
         self.trim_slider.min = 0
         self.trim_slider.max = duration
-        self.trim_slider.start_value = 0
-        self.trim_slider.end_value = duration
+        requested = self.pending_trim_range
+        self.pending_trim_range = None
+        if requested is None:
+            start, end = 0.0, duration
+        else:
+            start = min(duration, max(0.0, requested[0]))
+            end = duration if requested[1] is None else min(duration, max(start, requested[1]))
+        self.trim_slider.start_value = start
+        self.trim_slider.end_value = end
         self.preview_time_label.value = f"00:00.00 / {format_timestamp(duration)}"
         self._update_trim_label()
         self.page.update(
@@ -2231,6 +2363,8 @@ class ConverterApp:
             if self.source_field.value:
                 self.preview_revision += 1
                 await self._load_first_preview()
+                self._save_active_task_options()
+                self._refresh_queue_view()
         finally:
             self.trim_dragging = False
             if self.resume_preview_after_drag:
@@ -2267,6 +2401,8 @@ class ConverterApp:
         self.threshold_slider.disabled = False
         self.threshold_slider.value = value
         self.page.update(self.dither_control, self.threshold_slider)
+        if self._save_active_task_options():
+            self._refresh_queue_view()
         asyncio.create_task(self._rerender_current_preview())
 
     def _refresh_preset_options(self) -> None:
@@ -2300,6 +2436,8 @@ class ConverterApp:
         self.settings.workers = preset.workers
         self.settings.fast_video = preset.fast_video
         self.page.update()
+        if self._save_active_task_options():
+            self._refresh_queue_view()
         if self.source_field.value:
             asyncio.create_task(self._on_geometry_change(None))
 
@@ -2359,12 +2497,18 @@ class ConverterApp:
     async def _on_dither_change(self, _):
         self.threshold_slider.disabled = self.dither_control.selected[0] != "threshold"
         self.page.update(self.dither_control, self.threshold_slider)
+        if self._save_active_task_options():
+            self._refresh_queue_view()
         await self._rerender_current_preview()
 
     async def _on_threshold_change(self, _):
+        if self._save_active_task_options():
+            self._refresh_queue_view()
         await self._rerender_current_preview(debounce=True)
 
     async def _on_invert_change(self, _):
+        if self._save_active_task_options():
+            self._refresh_queue_view()
         await self._rerender_current_preview()
 
     async def _on_geometry_change(self, _):
@@ -2385,6 +2529,8 @@ class ConverterApp:
         except (OSError, ValueError):
             # A number field may be temporarily empty while the user is typing.
             return
+        if self._save_active_task_options():
+            self._refresh_queue_view()
         await self._load_first_preview()
 
     async def _rerender_current_preview(self, *, debounce: bool = False) -> None:
@@ -2480,7 +2626,6 @@ class ConverterApp:
     def _show_page(self, index: int) -> None:
         pages = [
             self.convert_page,
-            self.queue_page,
             self.player_page,
             self.settings_page,
             self.about_page,
@@ -2495,8 +2640,6 @@ class ConverterApp:
         if index == 0 and self.preview_needs_reload and not self.busy:
             self.preview_needs_reload = False
             asyncio.create_task(self._load_first_preview())
-        elif index == 1:
-            self._refresh_queue_view()
 
     def _on_resize(self, _=None) -> None:
         width = self.page.width or self.page.window.width or 1120

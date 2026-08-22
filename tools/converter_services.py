@@ -349,6 +349,8 @@ class QueueJob:
     progress: ConversionProgress | None = None
     summary: OvidSummary | None = None
     error: str = ""
+    selected: bool = True
+    frozen: bool = False
     created_at: float = field(default_factory=time.time)
 
 
@@ -419,6 +421,56 @@ class ConversionQueue:
             job.progress = None
             job.summary = None
             job.error = ""
+            return job
+
+    def replace_options(
+        self,
+        job_id: str,
+        options: ConversionOptions,
+        *,
+        target_profile: str | None = None,
+    ) -> QueueJob:
+        with self._lock:
+            job = self.find(job_id)
+            if job.state == "running" or job.frozen:
+                raise ValueError("正在转换的任务不能修改参数")
+            job.options = options
+            if target_profile is not None:
+                job.target_profile = target_profile
+            job.progress = None
+            job.summary = None
+            job.error = ""
+            job.state = "queued"
+            return job
+
+    def set_selected(self, job_id: str, selected: bool) -> QueueJob:
+        with self._lock:
+            job = self.find(job_id)
+            if job.frozen:
+                return job
+            job.selected = bool(selected)
+            return job
+
+    def freeze_selected(self) -> tuple[QueueJob, ...]:
+        with self._lock:
+            jobs = tuple(
+                job
+                for job in self._jobs
+                if job.selected and job.state != "running" and not job.frozen
+            )
+            for job in jobs:
+                if job.state in {"completed", "failed", "cancelled"}:
+                    job.state = "queued"
+                    job.progress = None
+                    job.summary = None
+                    job.error = ""
+                job.frozen = True
+            return jobs
+
+    def unfreeze(self, job_id: str) -> QueueJob:
+        with self._lock:
+            job = self.find(job_id)
+            job.frozen = False
             return job
 
     def remove(self, job_id: str) -> None:

@@ -79,6 +79,45 @@ class ConverterServicesTests(unittest.TestCase):
             self.assertEqual("stm32f103-128x32", first.target_profile)
             self.assertEqual("stm32f103-96x64", second.target_profile)
 
+    def test_queue_freezes_only_selected_jobs_for_a_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = services.ConversionQueue()
+            first = queue.add(self.options(root, output=root / "first.BIN"))
+            second = queue.add(self.options(root, output=root / "second.BIN"))
+            queue.set_selected(second.id, False)
+
+            frozen = queue.freeze_selected()
+
+            self.assertEqual((first,), frozen)
+            self.assertTrue(first.frozen)
+            self.assertFalse(second.frozen)
+            queue.unfreeze(first.id)
+            self.assertFalse(first.frozen)
+
+    def test_queue_option_edits_reset_completed_jobs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = services.ConversionQueue()
+            job = queue.add(self.options(root))
+            queue.update(job.id, state="completed")
+            changed = self.options(root, width=16, output=job.options.output)
+
+            queue.replace_options(job.id, changed, target_profile="stm32f103-128x32")
+
+            self.assertEqual("queued", job.state)
+            self.assertEqual(16, job.options.width)
+            self.assertEqual("stm32f103-128x32", job.target_profile)
+
+    def test_frozen_queue_jobs_cannot_be_edited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = services.ConversionQueue()
+            job = queue.add(self.options(root))
+            queue.freeze_selected()
+            with self.assertRaisesRegex(ValueError, "不能修改"):
+                queue.replace_options(job.id, self.options(root, width=16))
+
     def test_compatibility_reports_screen_and_filename_problems(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
