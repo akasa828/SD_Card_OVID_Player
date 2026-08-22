@@ -10,6 +10,8 @@ import math
 import os
 import threading
 import time
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -224,7 +226,7 @@ def is_supported_source(path: Path) -> bool:
     return path.is_dir() or path.suffix.lower() in IMAGE_SUFFIXES | VIDEO_SUFFIXES
 
 
-def source_preview_png(image, max_size: tuple[int, int] = (512, 320)) -> bytes:
+def source_preview_png(image, max_size: tuple[int, int] = (320, 180)) -> bytes:
     """Encode a bounded source preview without changing the conversion frame."""
     from PIL import Image
     import io
@@ -295,6 +297,12 @@ class PreviewSession:
         self.frames: list[tuple[bytes, object]] = []
         self.index = -1
         self.base_index = 0
+        self.executor: ThreadPoolExecutor | None = None
+        self.pending: deque[Future[tuple[bytes, object]]] = deque()
+        self.source_exhausted = False
+        self.prefetch_limit = min(8, max(2, os.cpu_count() or 2))
+        self.last_source_image = None
+        self.last_source_future: Future[tuple[bytes, object]] | None = None
 
     def close(self) -> None:
         if self.iterator is not None:
@@ -302,6 +310,14 @@ class PreviewSession:
             if close is not None:
                 close()
         self.iterator = None
+        while self.pending:
+            self.pending.popleft().cancel()
+        if self.executor is not None:
+            self.executor.shutdown(wait=True, cancel_futures=True)
+        self.executor = None
+        self.source_exhausted = False
+        self.last_source_image = None
+        self.last_source_future = None
 
     def reset(self, options: ConversionOptions, info=None) -> None:
         self.close()
@@ -311,6 +327,44 @@ class PreviewSession:
         self.frames.clear()
         self.index = -1
         self.base_index = 0
+
+    def _ensure_executor(self) -> ThreadPoolExecutor:
+        if self.executor is None:
+            workers = min(4, max(1, (os.cpu_count() or 2) - 1))
+            self.executor = ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="ovid-preview",
+            )
+        return self.executor
+
+    def _prepare_entry(self, image) -> tuple[bytes, object]:
+        return source_preview_png(image), prepare_monochrome_source(image, self.options)
+
+    def _fill_prefetch(self) -> None:
+        if self.iterator is None or self.source_exhausted:
+            return
+        executor = self._ensure_executor()
+        while len(self.pending) < self.prefetch_limit:
+            try:
+                image = next(self.iterator)
+            except StopIteration:
+                self.source_exhausted = True
+                break
+            if image is self.last_source_image and self.last_source_future is not None:
+                future = self.last_source_future
+            else:
+                future = executor.submit(self._prepare_entry, image)
+                self.last_source_image = image
+                self.last_source_future = future
+            self.pending.append(future)
+
+    def _next_prepared_entry(self) -> tuple[bytes, object]:
+        self._fill_prefetch()
+        if not self.pending:
+            raise PreviewFinished("已到最后一帧")
+        entry = self.pending.popleft().result()
+        self._fill_prefetch()
+        return entry
 
     def _render(self, entry: tuple[bytes, object]) -> tuple[bytes, bytes]:
         original, prepared = entry
@@ -324,14 +378,7 @@ class PreviewSession:
             original, data = self._render(self.frames[self.index])
             return original, data, self.base_index + self.index + 1
 
-        try:
-            image = next(self.iterator)
-        except StopIteration as exc:
-            # StopIteration cannot cross an asyncio Future boundary. Convert it
-            # before next_frame() returns to asyncio.to_thread().
-            raise PreviewFinished("已到最后一帧") from exc
-        prepared = prepare_monochrome_source(image, self.options)
-        original = source_preview_png(image)
+        original, prepared = self._next_prepared_entry()
         data = preview_prepared_png(prepared, self.options, scale=4)
         self.frames.append((original, prepared))
         self.index += 1
@@ -533,6 +580,7 @@ class ConverterApp:
             value=BUILTIN_PRESETS[0].name,
             options=[],
             on_select=self._apply_selected_preset,
+            expand=True,
         )
         self.preset_name_field = ft.TextField(label="新预设名称", expand=True)
         self._refresh_preset_options()
@@ -819,7 +867,8 @@ class ConverterApp:
                             tooltip="清除用户预设并恢复内置预设",
                             on_click=self._reset_user_presets,
                         ),
-                    ]
+                    ],
+                    wrap=True,
                 ),
                 ft.ResponsiveRow(
                     [
@@ -847,7 +896,7 @@ class ConverterApp:
                 self.force_switch,
                 ft.OutlinedButton("刷新预览", icon=ft.Icons.REFRESH, on_click=self._refresh_preview),
             ],
-            col={"xs": 12, "lg": 5},
+            col=12,
         )
         action_card = self._card(
             "转换进度",

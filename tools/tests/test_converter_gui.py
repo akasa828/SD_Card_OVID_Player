@@ -246,6 +246,37 @@ class ConverterGuiTests(unittest.TestCase):
                 self.assertEqual("已到最后一帧", str(raised.exception))
 
         asyncio.run(consume_preview())
+        session.close()
+
+    def test_preview_prefetch_reuses_duplicate_video_frames(self) -> None:
+        session = converter_gui.PreviewSession()
+        session.options = object()
+        shared = object()
+        unique = object()
+        session.iterator = iter([shared, shared, unique])
+        session.prefetch_limit = 3
+        prepared: list[object] = []
+
+        def prepare(image):
+            prepared.append(image)
+            return str(id(image)).encode(), image
+
+        with mock.patch.object(session, "_prepare_entry", side_effect=prepare):
+            first = session._next_prepared_entry()
+            second = session._next_prepared_entry()
+            third = session._next_prepared_entry()
+
+        session.close()
+        self.assertEqual(first, second)
+        self.assertNotEqual(second, third)
+        self.assertEqual(2, len(prepared))
+
+    def test_conversion_parameters_use_the_full_content_width(self) -> None:
+        source = GUI_SOURCE.read_text(encoding="utf-8")
+        self.assertNotIn('col={"xs": 12, "lg": 5}', source)
+        preset_start = source.index("self.preset_dropdown = ft.Dropdown(")
+        preset_end = source.index("self.preset_name_field", preset_start)
+        self.assertIn("expand=True", source[preset_start:preset_end])
 
     def test_current_frame_can_be_rerendered_without_reopening_source(self) -> None:
         session = converter_gui.PreviewSession()
