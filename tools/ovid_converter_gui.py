@@ -9,12 +9,30 @@ import json
 import math
 import os
 import threading
+import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import flet as ft
 
+try:
+    from flet_drop_zone import FletDropZone
+except ImportError:  # Local lightweight builds deliberately omit the Flutter extension.
+    FletDropZone = None
+
 from converter_version import DISPLAY_NAME, VERSION
+from converter_services import (
+    BUILTIN_PRESETS,
+    TARGET_PROFILES,
+    CompatibilityReport,
+    ConversionLogger,
+    ConversionPreset,
+    ConversionQueue,
+    PresetStore,
+    QueueJob,
+    check_compatibility,
+    suggested_threshold,
+)
 from media2ovid import (
     IMAGE_SUFFIXES,
     VIDEO_SUFFIXES,
@@ -28,6 +46,7 @@ from media2ovid import (
     preview_prepared_png,
     probe_source,
 )
+from ovid_player import OvidPlaybackSession
 
 
 REPOSITORY_URL = "https://github.com/akasa828/SD_Card_OVID_Player"
@@ -37,6 +56,8 @@ PRIMARY_FONT = "Google Sans Flex"
 SIMPLIFIED_CHINESE_FONT = "Noto Sans SC"
 NAVIGATION_ITEMS = (
     (ft.Icons.MOVIE, "转换"),
+    (ft.Icons.QUEUE_PLAY_NEXT, "队列"),
+    (ft.Icons.PLAY_CIRCLE, "播放器"),
     (ft.Icons.SETTINGS, "设置"),
     (ft.Icons.INFO, "关于"),
 )
@@ -180,6 +201,40 @@ def human_size(value: int | None) -> str:
     return f"{value / 1024 / 1024 / 1024:.2f} GiB"
 
 
+def parse_drop_paths(value: object) -> list[Path]:
+    """Decode desktop_drop event data without exposing JSON errors to the UI."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    paths: list[Path] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            paths.append(Path(item.strip()))
+    return paths
+
+
+def is_supported_source(path: Path) -> bool:
+    return path.is_dir() or path.suffix.lower() in IMAGE_SUFFIXES | VIDEO_SUFFIXES
+
+
+def source_preview_png(image, max_size: tuple[int, int] = (512, 320)) -> bytes:
+    """Encode a bounded source preview without changing the conversion frame."""
+    from PIL import Image
+    import io
+
+    preview = image.convert("RGBA")
+    preview.thumbnail(max_size, Image.Resampling.LANCZOS)
+    background = Image.new("RGBA", preview.size, (24, 24, 24, 255))
+    background.alpha_composite(preview)
+    buffer = io.BytesIO()
+    background.convert("RGB").save(buffer, "PNG")
+    return buffer.getvalue()
+
+
 @dataclass
 class AppSettings:
     width: int = 128
@@ -187,6 +242,9 @@ class AppSettings:
     fps: int = 15
     output_directory: str = ""
     theme: str = "system"
+    workers: int = 0
+    fast_video: bool = False
+    target_profile: str = "stm32f103-128x64"
 
 
 def settings_file() -> Path:
@@ -206,6 +264,13 @@ def load_settings() -> AppSettings:
             fps=min(120, max(1, int(values.get("fps", 15)))),
             output_directory=str(values.get("output_directory", "")),
             theme=normalize_theme_mode(values.get("theme", "system")),
+            workers=min(8, max(0, int(values.get("workers", 0)))),
+            fast_video=bool(values.get("fast_video", False)),
+            target_profile=(
+                str(values.get("target_profile"))
+                if str(values.get("target_profile")) in TARGET_PROFILES
+                else "stm32f103-128x64"
+            ),
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return AppSettings()
@@ -222,8 +287,9 @@ def save_settings(settings: AppSettings) -> None:
 class PreviewSession:
     def __init__(self) -> None:
         self.options: ConversionOptions | None = None
+        self.info = None
         self.iterator = None
-        self.frames: list[object] = []
+        self.frames: list[tuple[bytes, object]] = []
         self.index = -1
         self.base_index = 0
 
@@ -234,21 +300,26 @@ class PreviewSession:
                 close()
         self.iterator = None
 
-    def reset(self, options: ConversionOptions) -> None:
+    def reset(self, options: ConversionOptions, info=None) -> None:
         self.close()
         self.options = options
-        self.iterator = iter_source_images(options)
+        self.info = info
+        self.iterator = iter_source_images(options, info)
         self.frames.clear()
         self.index = -1
         self.base_index = 0
 
-    def next_frame(self) -> tuple[bytes, int]:
+    def _render(self, entry: tuple[bytes, object]) -> tuple[bytes, bytes]:
+        original, prepared = entry
+        return original, preview_prepared_png(prepared, self.options, scale=4)
+
+    def next_frame(self) -> tuple[bytes, bytes, int]:
         if self.options is None or self.iterator is None:
             raise ValueError("请先选择输入素材")
         if self.index + 1 < len(self.frames):
             self.index += 1
-            data = preview_prepared_png(self.frames[self.index], self.options, scale=4)
-            return data, self.base_index + self.index + 1
+            original, data = self._render(self.frames[self.index])
+            return original, data, self.base_index + self.index + 1
 
         try:
             image = next(self.iterator)
@@ -257,24 +328,25 @@ class PreviewSession:
             # before next_frame() returns to asyncio.to_thread().
             raise PreviewFinished("已到最后一帧") from exc
         prepared = prepare_monochrome_source(image, self.options)
+        original = source_preview_png(image)
         data = preview_prepared_png(prepared, self.options, scale=4)
-        self.frames.append(prepared)
+        self.frames.append((original, prepared))
         self.index += 1
         if len(self.frames) > MAX_PREVIEW_CACHE:
             self.frames.pop(0)
             self.index -= 1
             self.base_index += 1
-        return data, self.base_index + self.index + 1
+        return original, data, self.base_index + self.index + 1
 
-    def previous_frame(self) -> tuple[bytes, int]:
+    def previous_frame(self) -> tuple[bytes, bytes, int]:
         if not self.frames:
             raise ValueError("当前没有预览帧")
         if self.index > 0:
             self.index -= 1
-        data = preview_prepared_png(self.frames[self.index], self.options, scale=4)
-        return data, self.base_index + self.index + 1
+        original, data = self._render(self.frames[self.index])
+        return original, data, self.base_index + self.index + 1
 
-    def rerender_current(self, dither: str, threshold: int, invert: bool) -> tuple[bytes, int]:
+    def rerender_current(self, dither: str, threshold: int, invert: bool) -> tuple[bytes, bytes, int]:
         if self.options is None or not self.frames or self.index < 0:
             raise ValueError("当前没有预览帧")
         self.options = replace(
@@ -283,14 +355,27 @@ class PreviewSession:
             threshold=threshold,
             invert=invert,
         )
-        data = preview_prepared_png(self.frames[self.index], self.options, scale=4)
-        return data, self.base_index + self.index + 1
+        original, data = self._render(self.frames[self.index])
+        return original, data, self.base_index + self.index + 1
+
+    def current_grayscale(self):
+        if not self.frames or self.index < 0:
+            raise ValueError("当前没有预览帧")
+        return self.frames[self.index][1]
 
 
 class ConverterApp:
     def __init__(self, page: ft.Page) -> None:
         self.page = page
         self.settings = load_settings()
+        self.preset_store = PresetStore()
+        self.queue = ConversionQueue()
+        self.logger = ConversionLogger()
+        self.player = OvidPlaybackSession()
+        self.source_info = None
+        self.queue_runner_task: asyncio.Task | None = None
+        self.queue_cancel_event = threading.Event()
+        self.active_queue_job_id: str | None = None
         self.cancel_event = threading.Event()
         self.preview = PreviewSession()
         self.preview_lock = asyncio.Lock()
@@ -347,7 +432,7 @@ class ConverterApp:
                 ft.IconButton(
                     icon=ft.Icons.INFO,
                     tooltip="关于",
-                    on_click=lambda _: self._show_page(2),
+                    on_click=lambda _: self._show_page(4),
                 ),
             ],
         )
@@ -432,14 +517,57 @@ class ConverterApp:
             label="递归读取图片子目录", value=False, on_change=self._on_geometry_change
         )
         self.force_switch = ft.Switch(label="允许覆盖已有输出", value=False)
+        self.target_dropdown = ft.Dropdown(
+            label="目标屏幕",
+            value=self.settings.target_profile,
+            options=[
+                ft.DropdownOption(key=key, text=value[0])
+                for key, value in TARGET_PROFILES.items()
+            ],
+        )
+        self.preset_dropdown = ft.Dropdown(
+            label="转换预设",
+            value=BUILTIN_PRESETS[0].name,
+            options=[],
+            on_select=self._apply_selected_preset,
+        )
+        self.preset_name_field = ft.TextField(label="新预设名称", expand=True)
+        self._refresh_preset_options()
 
+        self.drop_zone = None
+        if FletDropZone is not None:
+            self.drop_zone = FletDropZone(
+                message="从资源管理器拖入图片、GIF、视频或图片目录",
+                active_message="松开鼠标以载入素材",
+                on_drop=self._on_system_drop,
+            )
+
+        self.trim_slider = ft.RangeSlider(
+            min=0,
+            max=1,
+            start_value=0,
+            end_value=1,
+            divisions=1,
+            round=2,
+            disabled=True,
+            on_change_end=self._on_trim_change,
+        )
+        self.trim_label = ft.Text("单张图片无需裁剪", color=ft.Colors.ON_SURFACE_VARIANT)
+
+        self.original_preview_image = ft.Image(
+            src=self._empty_preview(),
+            fit=ft.BoxFit.CONTAIN,
+            gapless_playback=True,
+            filter_quality=ft.FilterQuality.MEDIUM,
+            height=260,
+        )
         self.preview_image = ft.Image(
             src=self._empty_preview(),
             fit=ft.BoxFit.CONTAIN,
             gapless_playback=True,
             filter_quality=ft.FilterQuality.NONE,
             anti_alias=False,
-            height=320,
+            height=260,
         )
         self.preview_label = ft.Text("尚未载入素材", color=ft.Colors.ON_SURFACE_VARIANT)
         self.preview_play_button = ft.IconButton(
@@ -462,7 +590,52 @@ class ConverterApp:
             visible=False,
         )
 
+        self.queue_list = ft.Column(spacing=8)
+        self.queue_status = ft.Text("队列为空", color=ft.Colors.ON_SURFACE_VARIANT)
+        self.queue_run_button = ft.FilledButton(
+            "开始队列", icon=ft.Icons.PLAY_ARROW, on_click=self._start_queue
+        )
+        self.queue_cancel_button = ft.OutlinedButton(
+            "取消当前任务", icon=ft.Icons.CANCEL, on_click=self._cancel_queue_job
+        )
+
+        self.player_path = ft.TextField(label="OVID 文件", read_only=True, expand=True)
+        self.player_image = ft.Image(
+            src=self._empty_preview(),
+            fit=ft.BoxFit.CONTAIN,
+            gapless_playback=True,
+            filter_quality=ft.FilterQuality.NONE,
+            anti_alias=False,
+            height=360,
+        )
+        self.player_label = ft.Text("尚未打开 OVID 文件", color=ft.Colors.ON_SURFACE_VARIANT)
+        self.player_slider = ft.Slider(
+            min=0,
+            max=1,
+            value=0,
+            divisions=1,
+            disabled=True,
+            on_change_end=self._player_seek,
+        )
+        self.player_invert = ft.Switch(label="反显", value=False, on_change=self._player_redraw)
+        self.player_scale = ft.Dropdown(
+            label="预览倍数",
+            value="4",
+            width=140,
+            options=[ft.DropdownOption(key=str(value), text=f"{value}×") for value in (1, 2, 4, 6, 8)],
+            on_select=self._player_redraw,
+        )
+        self.player_playing = False
+        self.player_revision = 0
+        self.player_play_button = ft.IconButton(
+            icon=ft.Icons.PLAY_ARROW,
+            tooltip="播放 OVID",
+            on_click=self._toggle_player,
+        )
+
         self.convert_page = self._build_convert_page()
+        self.queue_page = self._build_queue_page()
+        self.player_page = self._build_player_page()
         self.settings_page = self._build_settings_page()
         self.about_page = self._build_about_page()
         self.page_host = ft.Container(expand=True, padding=ft.Padding.all(20))
@@ -538,6 +711,7 @@ class ConverterApp:
             [
                 ft.OutlinedButton("选择文件", icon=ft.Icons.INSERT_DRIVE_FILE, on_click=self._choose_file),
                 ft.OutlinedButton("选择图片目录", icon=ft.Icons.FOLDER_OPEN, on_click=self._choose_directory),
+                ft.OutlinedButton("批量选择", icon=ft.Icons.PLAYLIST_ADD, on_click=self._choose_queue_files),
             ],
             wrap=True,
         )
@@ -550,19 +724,49 @@ class ConverterApp:
         input_card = self._card(
             "素材与输出",
             ft.Icons.INSERT_DRIVE_FILE,
-            [self.source_field, source_actions, output_actions],
+            [
+                *([self.drop_zone] if self.drop_zone is not None else []),
+                self.source_field,
+                source_actions,
+                output_actions,
+            ],
             col=12,
         )
         preview_card = self._card(
-            "OLED 预览",
+            "画面对比",
             ft.Icons.IMAGE,
             [
-                ft.Container(
-                    content=self.preview_image,
-                    bgcolor=ft.Colors.BLACK,
-                    border_radius=16,
-                    padding=12,
-                    alignment=ft.Alignment.CENTER,
+                ft.ResponsiveRow(
+                    [
+                        ft.Column(
+                            [
+                                ft.Text("原始素材", weight=ft.FontWeight.W_500),
+                                ft.Container(
+                                    content=self.original_preview_image,
+                                    bgcolor=ft.Colors.BLACK,
+                                    border_radius=16,
+                                    padding=10,
+                                    alignment=ft.Alignment.CENTER,
+                                ),
+                            ],
+                            col={"xs": 12, "md": 6},
+                        ),
+                        ft.Column(
+                            [
+                                ft.Text("OLED 输出", weight=ft.FontWeight.W_500),
+                                ft.Container(
+                                    content=self.preview_image,
+                                    bgcolor=ft.Colors.BLACK,
+                                    border_radius=16,
+                                    padding=10,
+                                    alignment=ft.Alignment.CENTER,
+                                ),
+                            ],
+                            col={"xs": 12, "md": 6},
+                        ),
+                    ],
+                    spacing=12,
+                    run_spacing=12,
                 ),
                 ft.Row(
                     [
@@ -575,13 +779,30 @@ class ConverterApp:
                     alignment=ft.MainAxisAlignment.CENTER,
                     wrap=True,
                 ),
+                self.trim_slider,
+                self.trim_label,
             ],
-            col={"xs": 12, "lg": 7},
+            col=12,
         )
         parameter_card = self._card(
             "转换参数",
             ft.Icons.TUNE,
             [
+                ft.Row(
+                    [
+                        self.preset_dropdown,
+                        ft.IconButton(
+                            icon=ft.Icons.SAVE_AS,
+                            tooltip="保存当前参数为预设",
+                            on_click=self._save_preset_dialog,
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.DELETE_OUTLINE,
+                            tooltip="删除用户预设",
+                            on_click=self._delete_selected_preset,
+                        ),
+                    ]
+                ),
                 ft.ResponsiveRow(
                     [
                         self.width_field,
@@ -593,7 +814,17 @@ class ConverterApp:
                 self.fit_dropdown,
                 self.dither_control,
                 self.threshold_slider,
+                ft.Row(
+                    [
+                        ft.Text("自动阈值"),
+                        ft.OutlinedButton("标准", data="standard", on_click=self._auto_threshold_clicked),
+                        ft.OutlinedButton("保留暗部", data="dark-detail", on_click=self._auto_threshold_clicked),
+                        ft.OutlinedButton("减少噪点", data="noise-reduction", on_click=self._auto_threshold_clicked),
+                    ],
+                    wrap=True,
+                ),
                 self.background_dropdown,
+                self.target_dropdown,
                 ft.Row([self.invert_switch, self.recursive_switch], wrap=True),
                 self.force_switch,
                 ft.OutlinedButton("刷新预览", icon=ft.Icons.REFRESH, on_click=self._refresh_preview),
@@ -606,7 +837,16 @@ class ConverterApp:
             [
                 self.progress_bar,
                 self.progress_text,
-                ft.Row([self.convert_button, self.cancel_button], wrap=True),
+                ft.Row(
+                    [
+                        self.convert_button,
+                        ft.OutlinedButton(
+                            "加入队列", icon=ft.Icons.ADD_TO_QUEUE, on_click=self._add_current_to_queue
+                        ),
+                        self.cancel_button,
+                    ],
+                    wrap=True,
+                ),
             ],
             col=12,
         )
@@ -619,10 +859,80 @@ class ConverterApp:
             expand=True,
         )
 
+    def _build_queue_page(self):
+        return ft.Column(
+            [
+                ft.Text("批量转换队列", size=28, weight=ft.FontWeight.W_600),
+                ft.Row(
+                    [
+                        ft.OutlinedButton(
+                            "添加文件", icon=ft.Icons.PLAYLIST_ADD, on_click=self._choose_queue_files
+                        ),
+                        self.queue_run_button,
+                        self.queue_cancel_button,
+                        ft.TextButton("清理已完成", on_click=self._clear_completed_jobs),
+                    ],
+                    wrap=True,
+                ),
+                self.queue_status,
+                self._card("任务", ft.Icons.QUEUE_PLAY_NEXT, [self.queue_list]),
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+    def _build_player_page(self):
+        return ft.Column(
+            [
+                ft.Text("OVID 播放模拟器", size=28, weight=ft.FontWeight.W_600),
+                ft.Row(
+                    [
+                        self.player_path,
+                        ft.OutlinedButton(
+                            "打开 .BIN", icon=ft.Icons.FOLDER_OPEN, on_click=self._choose_ovid_file
+                        ),
+                    ]
+                ),
+                ft.Container(
+                    content=self.player_image,
+                    bgcolor=ft.Colors.BLACK,
+                    border_radius=16,
+                    padding=12,
+                    alignment=ft.Alignment.CENTER,
+                ),
+                self.player_slider,
+                ft.Row(
+                    [
+                        ft.IconButton(icon=ft.Icons.SKIP_PREVIOUS, on_click=self._player_first),
+                        ft.IconButton(icon=ft.Icons.CHEVRON_LEFT, on_click=self._player_previous),
+                        self.player_play_button,
+                        ft.IconButton(icon=ft.Icons.CHEVRON_RIGHT, on_click=self._player_next),
+                        self.player_invert,
+                        self.player_scale,
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    wrap=True,
+                ),
+                self.player_label,
+            ],
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
     def _build_settings_page(self):
         self.default_width = self._number_field("默认宽度", self.settings.width, 1, 255)
         self.default_height = self._number_field("默认高度", self.settings.height, 1, 255)
         self.default_fps = self._number_field("默认 FPS", self.settings.fps, 1, 120)
+        self.worker_dropdown = ft.Dropdown(
+            label="图像处理线程",
+            value=str(self.settings.workers),
+            options=[ft.DropdownOption(key="0", text="自动")]
+            + [ft.DropdownOption(key=str(value), text=str(value)) for value in range(1, 9)],
+        )
+        self.fast_video_switch = ft.Switch(
+            label="快速视频模式（临界时间点可能选择相邻帧）",
+            value=self.settings.fast_video,
+        )
         self.default_output = ft.TextField(
             label="默认输出目录",
             value=self.settings.output_directory,
@@ -651,7 +961,22 @@ class ConverterApp:
                             ft.IconButton(icon=ft.Icons.FOLDER_OPEN, on_click=self._choose_default_output),
                         ]),
                         self.theme_dropdown,
+                        self.worker_dropdown,
+                        self.fast_video_switch,
                         ft.FilledButton("保存设置", icon=ft.Icons.SAVE, on_click=self._save_settings),
+                    ],
+                ),
+                self._card(
+                    "转换日志",
+                    ft.Icons.RECEIPT_LONG,
+                    [
+                        ft.Text("日志仅保存在本机，最多保留 5 个、每个约 1 MiB。"),
+                        ft.Row(
+                            [
+                                ft.OutlinedButton("查看日志", on_click=self._show_logs),
+                                ft.OutlinedButton("导出日志", on_click=self._export_logs),
+                            ]
+                        ),
                     ],
                 ),
                 ft.Text(
@@ -714,6 +1039,18 @@ class ConverterApp:
             raise ValueError("请先选择输入素材")
         if require_output and not output_value:
             raise ValueError("请选择输出 .BIN 文件")
+        return self._options_for_source(source, output)
+
+    def _options_for_source(
+        self,
+        source: Path,
+        output: Path,
+        *,
+        use_current_trim: bool = True,
+    ) -> ConversionOptions:
+        trim_enabled = use_current_trim and not self.trim_slider.disabled
+        trim_start = float(self.trim_slider.start_value) if trim_enabled else 0.0
+        trim_end = float(self.trim_slider.end_value) if trim_enabled else None
         return ConversionOptions(
             source=source,
             output=output,
@@ -728,6 +1065,10 @@ class ConverterApp:
             recursive=self.recursive_switch.value,
             force=self.force_switch.value,
             skip_frames=int(self.skip_frames_field.value),
+            trim_start_seconds=trim_start,
+            trim_end_seconds=trim_end,
+            workers=self.settings.workers,
+            fast_video=self.settings.fast_video,
         )
 
     async def _choose_file(self, _):
@@ -739,6 +1080,249 @@ class ConverterApp:
         if files and files[0].path:
             self._set_source(Path(files[0].path))
             await self._load_first_preview()
+
+    async def _choose_queue_files(self, _):
+        files = await self.file_picker.pick_files(
+            dialog_title="选择要加入队列的图片、GIF 或视频",
+            allowed_extensions=sorted({suffix[1:] for suffix in IMAGE_SUFFIXES | VIDEO_SUFFIXES}),
+            allow_multiple=True,
+        )
+        if not files:
+            return
+        output_dir = (
+            Path(self.settings.output_directory)
+            if self.settings.output_directory
+            else Path(files[0].path).parent
+        )
+        added = 0
+        for item in files:
+            if not item.path:
+                continue
+            source = Path(item.path)
+            output = output_dir / f"{source.stem}.BIN"
+            self.queue.add(
+                self._options_for_source(source, output, use_current_trim=False),
+                target_profile=self.target_dropdown.value,
+            )
+            added += 1
+        self._refresh_queue_view()
+        if added:
+            self._show_page(1)
+
+    async def _on_system_drop(self, event) -> None:
+        paths = parse_drop_paths(getattr(event, "data", None))
+        if not paths:
+            self._show_notice("没有识别到可读取的路径")
+            return
+
+        unsupported = [path for path in paths if not is_supported_source(path) and path.suffix.lower() != ".bin"]
+        paths = [path for path in paths if path not in unsupported]
+        if unsupported:
+            names = "、".join(path.name for path in unsupported[:3])
+            suffix = " 等" if len(unsupported) > 3 else ""
+            self._show_notice(f"已忽略不支持的素材：{names}{suffix}")
+        if not paths:
+            return
+
+        if len(paths) == 1:
+            path = paths[0]
+            if path.suffix.lower() == ".bin":
+                await self._open_player_path(path)
+                return
+            self._set_source(path)
+            await self._load_first_preview()
+            return
+
+        sources = [path for path in paths if is_supported_source(path)]
+        if not sources:
+            self._show_notice("批量拖放仅支持图片、GIF、视频或图片目录")
+            return
+        output_dir = (
+            Path(self.settings.output_directory)
+            if self.settings.output_directory
+            else sources[0].parent
+        )
+        for source in sources:
+            output = output_dir / f"{source.stem}.BIN"
+            self.queue.add(
+                self._options_for_source(source, output, use_current_trim=False),
+                target_profile=self.target_dropdown.value,
+            )
+        self._refresh_queue_view()
+        self._show_page(1)
+        self._show_notice(f"已将 {len(sources)} 个素材加入队列")
+
+    def _add_current_to_queue(self, _):
+        try:
+            job = self.queue.add(
+                self._options(),
+                target_profile=self.target_dropdown.value,
+            )
+            self.logger.event("queue", f"added {job.options.source} -> {job.options.output}")
+            self._refresh_queue_view()
+            self._show_page(1)
+        except Exception as exc:
+            self._show_error("无法加入队列", exc)
+
+    def _queue_state_text(self, job: QueueJob) -> str:
+        names = {
+            "queued": "等待中",
+            "running": "转换中",
+            "completed": "已完成",
+            "failed": "失败",
+            "cancelled": "已取消",
+        }
+        detail = names.get(job.state, job.state)
+        if job.progress is not None:
+            if job.progress.ratio is not None:
+                detail += f" · {job.progress.ratio * 100:.1f}%"
+            detail += f" · {job.progress.completed_frames} 帧"
+        if job.error:
+            detail += f" · {job.error}"
+        return detail
+
+    def _refresh_queue_view(self) -> None:
+        jobs = self.queue.snapshot()
+        controls = []
+        for job in jobs:
+            actions = []
+            if job.state in {"failed", "cancelled"}:
+                actions.append(
+                    ft.IconButton(
+                        icon=ft.Icons.REFRESH,
+                        tooltip="重试",
+                        on_click=lambda _, job_id=job.id: self._retry_queue_job(job_id),
+                    )
+                )
+            if job.state != "running":
+                actions.append(
+                    ft.IconButton(
+                        icon=ft.Icons.DELETE_OUTLINE,
+                        tooltip="移除",
+                        on_click=lambda _, job_id=job.id: self._remove_queue_job(job_id),
+                    )
+                )
+            controls.append(
+                ft.Card(
+                    content=ft.Container(
+                        padding=12,
+                        content=ft.Row(
+                            [
+                                ft.Column(
+                                    [
+                                        ft.Text(job.options.source.name, weight=ft.FontWeight.W_500),
+                                        ft.Text(
+                                            self._queue_state_text(job),
+                                            color=ft.Colors.ON_SURFACE_VARIANT,
+                                        ),
+                                        ft.Text(
+                                            str(job.options.output),
+                                            size=12,
+                                            color=ft.Colors.ON_SURFACE_VARIANT,
+                                        ),
+                                    ],
+                                    expand=True,
+                                    spacing=2,
+                                ),
+                                *actions,
+                            ]
+                        ),
+                    )
+                )
+            )
+        self.queue_list.controls = controls
+        if not jobs:
+            self.queue_status.value = "队列为空"
+        else:
+            completed = sum(job.state == "completed" for job in jobs)
+            self.queue_status.value = f"共 {len(jobs)} 项 · 已完成 {completed} 项"
+        self.page.update(self.queue_list, self.queue_status)
+
+    async def _start_queue(self, _):
+        if self.queue_runner_task is not None and not self.queue_runner_task.done():
+            return
+        if self.queue.next_queued() is None:
+            self._show_error("无法开始队列", ValueError("队列中没有等待任务"))
+            return
+        self.queue_runner_task = asyncio.create_task(self._run_queue())
+
+    async def _run_queue(self) -> None:
+        self.queue_run_button.disabled = True
+        self.page.update(self.queue_run_button)
+        try:
+            while True:
+                job = self.queue.next_queued()
+                if job is None:
+                    break
+                self.active_queue_job_id = job.id
+                self.queue_cancel_event.clear()
+                self.queue.update(job.id, state="running")
+                self._refresh_queue_view()
+                self.logger.event("queue", f"start {job.options.source}")
+                try:
+                    info = await asyncio.to_thread(probe_source, job.options)
+                    report = await asyncio.to_thread(
+                        check_compatibility,
+                        job.options,
+                        info,
+                        job.target_profile,
+                    )
+                    if not report.can_convert:
+                        raise ValueError(
+                            "; ".join(
+                                issue.message for issue in report.issues if issue.severity == "error"
+                            )
+                        )
+
+                    def progress(value: ConversionProgress) -> None:
+                        self.queue.update(job.id, progress=value)
+
+                    worker = asyncio.create_task(
+                        asyncio.to_thread(
+                            convert_media,
+                            job.options,
+                            progress=progress,
+                            cancelled=self.queue_cancel_event.is_set,
+                            source_info=info,
+                        )
+                    )
+                    while not worker.done():
+                        self._refresh_queue_view()
+                        await asyncio.sleep(0.1)
+                    summary = await worker
+                    self.queue.update(job.id, state="completed", summary=summary)
+                    self.logger.event("queue", f"completed {summary.path}")
+                except ConversionCancelled:
+                    self.queue.update(job.id, state="cancelled")
+                    self.logger.event("queue", f"cancelled {job.options.source}")
+                except Exception as exc:
+                    self.queue.update(job.id, state="failed", error=str(exc))
+                    self.logger.event("queue", f"failed {job.options.source}: {exc}", level=40)
+                finally:
+                    self.active_queue_job_id = None
+                    self._refresh_queue_view()
+        finally:
+            self.queue_run_button.disabled = False
+            self.page.update(self.queue_run_button)
+
+    def _cancel_queue_job(self, _):
+        if self.active_queue_job_id is not None:
+            self.queue_cancel_event.set()
+
+    def _retry_queue_job(self, job_id: str) -> None:
+        self.queue.retry(job_id)
+        self._refresh_queue_view()
+
+    def _remove_queue_job(self, job_id: str) -> None:
+        try:
+            self.queue.remove(job_id)
+            self._refresh_queue_view()
+        except Exception as exc:
+            self._show_error("无法移除任务", exc)
+
+    def _clear_completed_jobs(self, _):
+        self.queue.clear_completed()
+        self._refresh_queue_view()
 
     async def _choose_directory(self, _):
         selected = await self.file_picker.get_directory_path(dialog_title="选择图片帧目录")
@@ -762,11 +1346,136 @@ class ConverterApp:
             self.output_field.value = str(path)
             self.page.update()
 
+    async def _choose_ovid_file(self, _):
+        files = await self.file_picker.pick_files(
+            dialog_title="打开 OVID .BIN",
+            allowed_extensions=["BIN", "bin"],
+            allow_multiple=False,
+        )
+        if files and files[0].path:
+            try:
+                self._open_player_path(Path(files[0].path), show_page=True)
+            except Exception as exc:
+                self._show_error("无法打开 OVID", exc)
+
+    def _open_player_path(self, path: Path, *, show_page: bool) -> None:
+        header = self.player.open(path)
+        self.player_path.value = str(path)
+        self.player_slider.disabled = False
+        self.player_slider.min = 0
+        self.player_slider.max = max(1, header.frame_count - 1)
+        self.player_slider.divisions = max(1, header.frame_count - 1)
+        self.player_slider.value = 0
+        self.player_playing = False
+        self.player_revision += 1
+        self.player_play_button.icon = ft.Icons.PLAY_ARROW
+        self._draw_player_frame(0)
+        if show_page:
+            self._show_page(2)
+
+    def _draw_player_frame(self, index: int) -> None:
+        frame = self.player.seek(
+            index,
+            invert=bool(self.player_invert.value),
+            scale=int(self.player_scale.value),
+        )
+        self.player_image.src = frame.png
+        self.player_slider.value = frame.index
+        header = self.player.header
+        crc = "CRC 正确" if frame.crc_valid else "CRC 错误，保持上一帧"
+        self.player_label.value = (
+            f"第 {frame.index + 1}/{header.frame_count} 帧 · "
+            f"{header.width}×{header.height} · {header.fps} FPS · {crc}"
+        )
+        self.page.update(self.player_image, self.player_slider, self.player_label)
+
+    async def _player_seek(self, _):
+        try:
+            self._draw_player_frame(round(float(self.player_slider.value)))
+        except Exception as exc:
+            self._show_error("无法定位 OVID 帧", exc)
+
+    async def _player_first(self, _):
+        if self.player.header is not None:
+            self._draw_player_frame(0)
+
+    async def _player_previous(self, _):
+        if self.player.header is not None:
+            self._draw_player_frame(max(0, self.player.index - 1))
+
+    async def _player_next(self, _):
+        if self.player.header is not None:
+            self._draw_player_frame(min(self.player.header.frame_count - 1, self.player.index + 1))
+
+    async def _player_redraw(self, _):
+        if self.player.header is not None:
+            self._draw_player_frame(max(0, self.player.index))
+
+    async def _toggle_player(self, _):
+        if self.player.header is None:
+            self._show_error("无法播放 OVID", ValueError("请先打开 OVID 文件"))
+            return
+        if self.player_playing:
+            self.player_playing = False
+            self.player_revision += 1
+            self.player_play_button.icon = ft.Icons.PLAY_ARROW
+            self.page.update(self.player_play_button)
+            return
+        self.player_playing = True
+        self.player_revision += 1
+        revision = self.player_revision
+        self.player_play_button.icon = ft.Icons.PAUSE
+        self.page.update(self.player_play_button)
+        interval = 1 / self.player.header.fps
+        loop = asyncio.get_running_loop()
+        deadline = loop.time()
+        try:
+            while self.player_playing and revision == self.player_revision:
+                if self.player.index >= self.player.header.frame_count - 1:
+                    break
+                self._draw_player_frame(self.player.index + 1)
+                delay, deadline = advance_preview_deadline(deadline, loop.time(), interval)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+        finally:
+            if revision == self.player_revision:
+                self.player_playing = False
+                self.player_play_button.icon = ft.Icons.PLAY_ARROW
+                self.page.update(self.player_play_button)
+
     async def _choose_default_output(self, _):
         selected = await self.file_picker.get_directory_path(dialog_title="选择默认输出目录")
         if selected:
             self.default_output.value = selected
             self.page.update()
+
+    def _show_logs(self, _):
+        content = self.logger.read() or "当前还没有转换日志。"
+        self.page.show_dialog(
+            ft.AlertDialog(
+                title="转换日志",
+                content=ft.Container(
+                    content=ft.Text(content, selectable=True, size=12),
+                    width=760,
+                    height=420,
+                ),
+                actions=[ft.Button("关闭", on_click=lambda _: self.page.pop_dialog())],
+                scrollable=True,
+            )
+        )
+
+    async def _export_logs(self, _):
+        selected = await self.file_picker.save_file(
+            dialog_title="导出 OVID Converter 日志",
+            file_name="OVID_Converter.log",
+            allowed_extensions=["log", "txt"],
+        )
+        if selected:
+            try:
+                await asyncio.to_thread(self.logger.export, Path(selected))
+                self._show_message("日志已导出", selected)
+            except Exception as exc:
+                self._show_error("无法导出日志", exc)
 
     def _set_source(self, source: Path) -> None:
         self.preview_playing = False
@@ -774,6 +1483,13 @@ class ConverterApp:
         self.preview_render_revision += 1
         self.preview_revision += 1
         self.preview_play_button.icon = ft.Icons.PLAY_ARROW
+        self.source_info = None
+        self.trim_slider.disabled = True
+        self.trim_slider.min = 0
+        self.trim_slider.max = 1
+        self.trim_slider.start_value = 0
+        self.trim_slider.end_value = 1
+        self.trim_label.value = "正在读取素材时间轴…"
         self.source_field.value = str(source)
         output_dir = Path(self.settings.output_directory) if self.settings.output_directory else source.parent
         self.output_field.value = str(output_dir / f"{source.stem}.BIN")
@@ -793,16 +1509,20 @@ class ConverterApp:
         revision = self.preview_revision
         try:
             options = self._options(require_output=False)
+            first_probe = self.source_info is None
             async with self.preview_lock:
                 await asyncio.to_thread(self.preview.close)
                 info = await asyncio.to_thread(probe_source, options)
-                await asyncio.to_thread(self.preview.reset, options)
-                data, index = await asyncio.to_thread(self.preview.next_frame)
+                await asyncio.to_thread(self.preview.reset, options, info)
+                original, data, index = await asyncio.to_thread(self.preview.next_frame)
             if revision != self.preview_revision:
                 return
+            self.source_info = info
+            if first_probe:
+                self._configure_trim_timeline(info)
             total = info.frame_count if info.frame_count is not None else "?"
             estimate = estimate_output_bytes(options, info)
-            self._set_preview_frame(data, f"第 {index}/{total} 帧 · 预计 {human_size(estimate)}")
+            self._set_preview_frame(original, data, f"第 {index}/{total} 帧 · 预计 {human_size(estimate)}")
         except Exception as exc:
             if revision != self.preview_revision:
                 return
@@ -816,10 +1536,10 @@ class ConverterApp:
         revision = self.preview_revision
         try:
             async with self.preview_lock:
-                data, index = await asyncio.to_thread(self.preview.next_frame)
+                original, data, index = await asyncio.to_thread(self.preview.next_frame)
             if revision != self.preview_revision:
                 return False
-            self._set_preview_frame(data, f"第 {index} 帧")
+            self._set_preview_frame(original, data, f"第 {index} 帧")
             return True
         except PreviewFinished:
             if revision != self.preview_revision:
@@ -837,19 +1557,20 @@ class ConverterApp:
         revision = self.preview_revision
         try:
             async with self.preview_lock:
-                data, index = self.preview.previous_frame()
+                original, data, index = self.preview.previous_frame()
             if revision != self.preview_revision:
                 return
-            self._set_preview_frame(data, f"第 {index} 帧")
+            self._set_preview_frame(original, data, f"第 {index} 帧")
         except Exception as exc:
             if revision != self.preview_revision:
                 return
             self._show_error("无法读取上一帧", exc)
 
-    def _set_preview_frame(self, data: bytes, label: str) -> None:
+    def _set_preview_frame(self, original: bytes, data: bytes, label: str) -> None:
+        self.original_preview_image.src = original
         self.preview_image.src = data
         self.preview_label.value = label
-        self.page.update(self.preview_image, self.preview_label)
+        self.page.update(self.original_preview_image, self.preview_image, self.preview_label)
 
     async def _toggle_preview_playback(self, _):
         if self.preview_playing:
@@ -893,7 +1614,18 @@ class ConverterApp:
         try:
             options = self._options()
             options.validate()
-            info = await asyncio.to_thread(probe_source, options)
+            info = self.source_info or await asyncio.to_thread(probe_source, options)
+            report = await asyncio.to_thread(
+                check_compatibility,
+                options,
+                info,
+                self.target_dropdown.value,
+            )
+            if not report.can_convert:
+                errors = "\n".join(
+                    f"• {issue.message}" for issue in report.issues if issue.severity == "error"
+                )
+                raise ValueError(errors)
         except Exception as exc:
             self._show_error("无法开始转换", exc)
             return
@@ -912,6 +1644,12 @@ class ConverterApp:
         self.progress_bar.value = 0 if info.frame_count else None
         self.progress_text.value = "正在准备转换…"
         self.page.update()
+        self.logger.event(
+            "convert",
+            f"start source={options.source} output={options.output} "
+            f"size={options.width}x{options.height} fps={options.fps} "
+            f"workers={options.workers or 'auto'} fast_video={options.fast_video}",
+        )
         loop = asyncio.get_running_loop()
         self.progress_render_task = asyncio.create_task(
             self._render_conversion_progress(revision, self.progress_finish_event)
@@ -929,6 +1667,7 @@ class ConverterApp:
                 options,
                 progress=progress,
                 cancelled=self.cancel_event.is_set,
+                source_info=info,
             )
             self.latest_conversion_progress = (
                 revision,
@@ -949,15 +1688,22 @@ class ConverterApp:
             if self.page_index == 0:
                 self.page.update(self.progress_bar, self.progress_text)
             self._show_message("转换完成", f"OVID 文件已保存到：\n{summary.path}")
+            self.logger.event(
+                "convert",
+                f"completed frames={summary.frame_count} bytes={summary.file_bytes} path={summary.path}",
+            )
+            self._open_player_path(summary.path, show_page=False)
         except ConversionCancelled:
             self.progress_text.value = "转换已取消，临时文件已清理"
             if self.page_index == 0:
                 self.page.update(self.progress_text)
+            self.logger.event("convert", "cancelled")
         except Exception as exc:
             self.progress_text.value = "转换失败"
             if self.page_index == 0:
                 self.page.update(self.progress_text)
             self._show_error("转换失败", exc)
+            self.logger.event("convert", f"failed: {exc}", level=40)
         finally:
             self.busy = False
             self.convert_button.disabled = False
@@ -1005,13 +1751,20 @@ class ConverterApp:
                     if target is None:
                         text = (
                             f"已转换 {value.completed_frames} 帧 · "
-                            f"{human_size(value.output_bytes)}"
+                            f"{human_size(value.output_bytes)} · "
+                            f"{value.current_fps:.1f} FPS"
                         )
                     else:
+                        eta = (
+                            f" · 剩余 {value.remaining_seconds:.1f} 秒"
+                            if value.remaining_seconds is not None
+                            else ""
+                        )
                         text = (
                             f"{target * 100:.1f}% · "
                             f"{value.completed_frames}/{value.total_frames} 帧 · "
-                            f"{human_size(value.output_bytes)}"
+                            f"{human_size(value.output_bytes)} · "
+                            f"{value.current_fps:.1f}/{value.average_fps:.1f} FPS{eta}"
                         )
                     text_changed = value.completed_frames != last_completed
                     if text_changed:
@@ -1049,6 +1802,124 @@ class ConverterApp:
         self.progress_text.value = "正在取消…"
         if self.page_index == 0:
             self.page.update(self.progress_text)
+
+    def _configure_trim_timeline(self, info) -> None:
+        if info.kind == "image" or not info.duration_seconds:
+            self.trim_slider.disabled = True
+            self.trim_label.value = "单张图片无需裁剪"
+            self.page.update(self.trim_slider, self.trim_label)
+            return
+        duration = max(1 / max(1, int(self.fps_field.value)), info.duration_seconds)
+        self.trim_slider.disabled = False
+        self.trim_slider.min = 0
+        self.trim_slider.max = duration
+        self.trim_slider.start_value = 0
+        self.trim_slider.end_value = duration
+        self.trim_slider.divisions = min(1000, max(1, info.frame_count or round(duration * 10)))
+        self.trim_label.value = f"转换范围：0.00–{duration:.2f} 秒"
+        self.page.update(self.trim_slider, self.trim_label)
+
+    async def _on_trim_change(self, _):
+        start = float(self.trim_slider.start_value)
+        end = float(self.trim_slider.end_value)
+        self.trim_label.value = f"转换范围：{start:.2f}–{end:.2f} 秒（终点不包含）"
+        self.page.update(self.trim_label)
+        if self.source_field.value:
+            self.preview_revision += 1
+            await self._load_first_preview()
+
+    async def _auto_threshold_clicked(self, event) -> None:
+        await self._auto_threshold(str(event.control.data))
+
+    async def _auto_threshold(self, mode: str) -> None:
+        try:
+            async with self.preview_lock:
+                gray = self.preview.current_grayscale().copy()
+            value = await asyncio.to_thread(suggested_threshold, gray, mode)
+            self.dither_control.selected = ["threshold"]
+            self.threshold_slider.disabled = False
+            self.threshold_slider.value = value
+            self.page.update(self.dither_control, self.threshold_slider)
+            await self._rerender_current_preview()
+        except Exception as exc:
+            self._show_error("无法分析自动阈值", exc)
+
+    def _refresh_preset_options(self) -> None:
+        if not hasattr(self, "preset_dropdown"):
+            return
+        presets = self.preset_store.all_presets()
+        self.preset_dropdown.options = [
+            ft.DropdownOption(key=preset.name, text=preset.name) for preset in presets
+        ]
+        if not any(preset.name == self.preset_dropdown.value for preset in presets):
+            self.preset_dropdown.value = presets[0].name
+
+    def _apply_selected_preset(self, _):
+        preset = next(
+            (item for item in self.preset_store.all_presets() if item.name == self.preset_dropdown.value),
+            None,
+        )
+        if preset is None:
+            return
+        self.width_field.value = str(preset.width)
+        self.height_field.value = str(preset.height)
+        self.fps_field.value = str(preset.fps)
+        self.fit_dropdown.value = preset.fit
+        self.dither_control.selected = [preset.dither]
+        self.threshold_slider.value = preset.threshold
+        self.threshold_slider.disabled = preset.dither != "threshold"
+        self.invert_switch.value = preset.invert
+        self.background_dropdown.value = preset.background
+        self.recursive_switch.value = preset.recursive
+        self.target_dropdown.value = preset.target_profile
+        self.settings.workers = preset.workers
+        self.settings.fast_video = preset.fast_video
+        self.page.update()
+        if self.source_field.value:
+            asyncio.create_task(self._on_geometry_change(None))
+
+    def _save_preset_dialog(self, _):
+        self.preset_name_field.value = ""
+        self.page.show_dialog(
+            ft.AlertDialog(
+                title="保存转换预设",
+                content=self.preset_name_field,
+                actions=[
+                    ft.TextButton("取消", on_click=lambda _: self.page.pop_dialog()),
+                    ft.FilledButton("保存", on_click=self._confirm_save_preset),
+                ],
+            )
+        )
+
+    def _confirm_save_preset(self, _):
+        try:
+            options = self._options(require_output=False)
+            preset = ConversionPreset.from_options(
+                self.preset_name_field.value.strip(),
+                options,
+                self.target_dropdown.value,
+            )
+            self.preset_store.upsert(preset)
+            self._refresh_preset_options()
+            self.preset_dropdown.value = preset.name
+            self.page.pop_dialog()
+            self.page.update(self.preset_dropdown)
+        except Exception as exc:
+            self._show_error("无法保存预设", exc)
+
+    def _delete_selected_preset(self, _):
+        preset = next(
+            (item for item in self.preset_store.all_presets() if item.name == self.preset_dropdown.value),
+            None,
+        )
+        if preset is None:
+            return
+        if preset.builtin:
+            self._show_error("无法删除预设", ValueError("内置预设不能删除"))
+            return
+        self.preset_store.delete(preset.name)
+        self._refresh_preset_options()
+        self.page.update(self.preset_dropdown)
 
     async def _on_dither_change(self, _):
         self.threshold_slider.disabled = self.dither_control.selected[0] != "threshold"
@@ -1098,7 +1969,7 @@ class ConverterApp:
             dither = self.dither_control.selected[0]
             threshold = round(float(self.threshold_slider.value))
             async with self.preview_lock:
-                data, index = await asyncio.to_thread(
+                original, data, index = await asyncio.to_thread(
                     self.preview.rerender_current,
                     dither,
                     threshold,
@@ -1109,7 +1980,7 @@ class ConverterApp:
                 or source_revision != self.preview_revision
             ):
                 return
-            self._set_preview_frame(data, f"第 {index} 帧")
+            self._set_preview_frame(original, data, f"第 {index} 帧")
         except ValueError:
             return
         except Exception as exc:
@@ -1129,6 +2000,9 @@ class ConverterApp:
                 fps=fps,
                 output_directory=self.default_output.value,
                 theme=self.theme_dropdown.value,
+                workers=int(self.worker_dropdown.value),
+                fast_video=bool(self.fast_video_switch.value),
+                target_profile=self.target_dropdown.value,
             )
             save_settings(self.settings)
             self.width_field.value = str(width)
@@ -1169,7 +2043,13 @@ class ConverterApp:
             self.page.update()
 
     def _show_page(self, index: int) -> None:
-        pages = [self.convert_page, self.settings_page, self.about_page]
+        pages = [
+            self.convert_page,
+            self.queue_page,
+            self.player_page,
+            self.settings_page,
+            self.about_page,
+        ]
         if not 0 <= index < len(pages):
             index = 0
         self.page_index = index
@@ -1180,6 +2060,8 @@ class ConverterApp:
         if index == 0 and self.preview_needs_reload and not self.busy:
             self.preview_needs_reload = False
             asyncio.create_task(self._load_first_preview())
+        elif index == 1:
+            self._refresh_queue_view()
 
     def _on_resize(self, _=None) -> None:
         width = self.page.width or self.page.window.width or 1120
@@ -1208,13 +2090,39 @@ class ConverterApp:
             )
         )
 
+    def _show_notice(self, message: str) -> None:
+        self.page.show_dialog(
+            ft.SnackBar(
+                content=ft.Text(message),
+                show_close_icon=True,
+                duration=4000,
+            )
+        )
+
+
+async def before_main(page: ft.Page) -> None:
+    """Keep the native window hidden until its first centered frame is ready."""
+    page.window.visible = False
+    page.window.width = 1120
+    page.window.height = 760
+    page.window.min_width = 680
+    page.window.min_height = 600
+    page.update()
+
 
 async def main(page: ft.Page) -> None:
     ConverterApp(page)
     page.update()
+    await page.window.wait_until_ready_to_show()
     await page.window.center()
+    page.window.visible = True
     page.update()
 
 
 if __name__ == "__main__":
-    ft.run(main, name="OVID Converter", assets_dir=str(ASSETS_DIR))
+    ft.run(
+        main,
+        before_main=before_main,
+        name="OVID Converter",
+        assets_dir=str(ASSETS_DIR),
+    )

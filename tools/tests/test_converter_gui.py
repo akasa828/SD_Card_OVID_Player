@@ -36,7 +36,10 @@ class ConverterGuiTests(unittest.TestCase):
     def test_preview_image_keeps_the_previous_frame_while_decoding(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")
         self.assertIn("gapless_playback=True", source)
-        self.assertIn("self.page.update(self.preview_image, self.preview_label)", source)
+        self.assertIn(
+            "self.page.update(self.original_preview_image, self.preview_image, self.preview_label)",
+            source,
+        )
 
     def test_threshold_has_live_preview_and_help_text(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")
@@ -225,8 +228,9 @@ class ConverterGuiTests(unittest.TestCase):
             with (
                 mock.patch.object(converter_gui, "prepare_monochrome_source", return_value=object()),
                 mock.patch.object(converter_gui, "preview_prepared_png", return_value=b"frame"),
+                mock.patch.object(converter_gui, "source_preview_png", return_value=b"source"),
             ):
-                self.assertEqual((b"frame", 1), await asyncio.to_thread(session.next_frame))
+                self.assertEqual((b"source", b"frame", 1), await asyncio.to_thread(session.next_frame))
                 with self.assertRaises(converter_gui.PreviewFinished) as raised:
                     await asyncio.to_thread(session.next_frame)
                 self.assertEqual("已到最后一帧", str(raised.exception))
@@ -239,20 +243,25 @@ class ConverterGuiTests(unittest.TestCase):
             source=Path("source.png"),
             output=Path("output.bin"),
         )
-        session.frames = [object()]
+        session.frames = [(b"source", object())]
         session.index = 0
         with mock.patch.object(converter_gui, "preview_prepared_png", return_value=b"updated"):
-            data, index = session.rerender_current("threshold", 96, True)
-        self.assertEqual((b"updated", 1), (data, index))
+            original, data, index = session.rerender_current("threshold", 96, True)
+        self.assertEqual((b"source", b"updated", 1), (original, data, index))
         self.assertEqual("threshold", session.options.dither)
         self.assertEqual(96, session.options.threshold)
         self.assertTrue(session.options.invert)
 
-    def test_compact_navigation_matches_the_three_pages(self) -> None:
-        self.assertEqual(("转换", "设置", "关于"), tuple(label for _, label in converter_gui.NAVIGATION_ITEMS))
+    def test_compact_navigation_matches_the_five_pages(self) -> None:
+        self.assertEqual(
+            ("转换", "队列", "播放器", "设置", "关于"),
+            tuple(label for _, label in converter_gui.NAVIGATION_ITEMS),
+        )
 
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.convert_page = object()
+        app.queue_page = object()
+        app.player_page = object()
         app.settings_page = object()
         app.about_page = object()
         app.page_host = SimpleNamespace(content=None)

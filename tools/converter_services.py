@@ -294,12 +294,13 @@ def check_compatibility(
     )
 
 
-def unique_output_path(path: Path) -> Path:
-    if not path.exists():
+def unique_output_path(path: Path, *, reserved: set[Path] | None = None) -> Path:
+    reserved = reserved or set()
+    if not path.exists() and path.resolve() not in reserved:
         return path
     for index in range(2, 10000):
         candidate = path.with_name(f"{path.stem}_{index}{path.suffix}")
-        if not candidate.exists():
+        if not candidate.exists() and candidate.resolve() not in reserved:
             return candidate
     raise FileExistsError(f"无法为输出生成不重复的文件名：{path}")
 
@@ -338,6 +339,7 @@ class ConversionLogger:
 @dataclass
 class QueueJob:
     options: ConversionOptions
+    target_profile: str = "stm32f103-128x64"
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     state: str = "queued"
     progress: ConversionProgress | None = None
@@ -357,10 +359,18 @@ class ConversionQueue:
         with self._lock:
             return tuple(self._jobs)
 
-    def add(self, options: ConversionOptions) -> QueueJob:
+    def add(
+        self,
+        options: ConversionOptions,
+        *,
+        target_profile: str = "stm32f103-128x64",
+    ) -> QueueJob:
         if not options.force:
-            options = replace(options, output=unique_output_path(options.output))
-        job = QueueJob(options)
+            with self._lock:
+                reserved = {job.options.output.resolve() for job in self._jobs}
+            output = unique_output_path(options.output, reserved=reserved)
+            options = replace(options, output=output)
+        job = QueueJob(options, target_profile=target_profile)
         with self._lock:
             self._jobs.append(job)
         return job

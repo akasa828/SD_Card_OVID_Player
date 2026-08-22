@@ -124,3 +124,16 @@ class OvidPlaybackSession:
             result = self.read(frame_index, invert=invert, scale=scale)
         assert result is not None
         return result
+
+    def seek(self, index: int, *, invert: bool = False, scale: int = 4) -> SimulatedFrame:
+        if self.header is None:
+            raise ValueError("请先打开 OVID 文件")
+        target = min(self.header.frame_count - 1, max(0, index))
+        if target == self.index + 1:
+            return self.read(target, invert=invert, scale=scale)
+        self.last_valid = bytes(self.header.frame_bytes)
+        result = None
+        for frame_index in range(target + 1):
+            result = self.read(frame_index, invert=invert, scale=scale)
+        assert result is not None
+        return result
