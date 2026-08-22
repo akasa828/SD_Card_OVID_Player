@@ -344,6 +344,10 @@ The portable build runs after extraction. The installer provides English and Sim
 
 The current `v1.3.0-beta.2` development build uses a fixed threshold of `128` by default, with Floyd–Steinberg dithering still available in the conversion options. The `beta.1` downloads above retain the previous default.
 
+The `beta.2` source also adds side-by-side source/OLED previews, timeline trimming, Otsu threshold suggestions, presets, a batch queue, compatibility checks, and a built-in OVID player. Conversion can now use bounded multithreaded processing, and every generated file is reopened to verify its header and all frame CRCs.
+
+Future GitHub Release packages use the Flutter Windows build chain to compile the Explorer drag-and-drop extension. The root `Build_OVID_Converter.bat` remains a lighter local compatibility build that does not require Flutter or Visual Studio C++ Build Tools, but it hides the drop area. File selection, the conversion queue, and the OVID player remain available in both builds.
+
 > [!WARNING]
 > The Windows packages are currently unsigned, so SmartScreen may report an unknown publisher. Download them only from this repository's Release page and verify them against `SHA256SUMS.txt` from the same Release.
 

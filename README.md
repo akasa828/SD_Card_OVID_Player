@@ -348,6 +348,10 @@ SD 卡根目录/
 
 当前 `v1.3.0-beta.2` 开发版默认使用固定阈值 `128`，也可以在转换参数中切换为 Floyd–Steinberg 抖动；上方 `beta.1` 下载包仍沿用此前的默认设置。
 
+`beta.2` 源码还加入了原图/OLED 双预览、时间轴裁剪、Otsu 阈值建议、转换预设、批量队列、兼容性检查和内置 OVID 播放器。转换现在可使用有界多线程处理，并在写出后重新校验文件头与全部帧 CRC。
+
+后续 GitHub Release 中的完整版会通过 Flutter Windows 构建链编译资源管理器拖放扩展；根目录 `Build_OVID_Converter.bat` 仍是较轻量的本地兼容构建，不要求安装 Flutter 或 Visual Studio C++ Build Tools，但不会显示拖放区域。两种构建都保留文件选择、转换队列和 OVID 播放器。
+
 > [!WARNING]
 > 当前 Windows 程序没有代码签名证书，SmartScreen 可能显示“未知发布者”。请只从本仓库 Release 下载，并用同一页面中的 `SHA256SUMS.txt` 校验文件。
 
