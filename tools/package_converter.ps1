@@ -1,6 +1,6 @@
 param(
-    [string]$Version = "1.3.0-beta.1",
-    [string]$WindowsVersion = "1.3.0.1",
+    [string]$Version = "1.3.0-beta.2",
+    [string]$WindowsVersion = "1.3.0.2",
     [string]$OutputRoot = "",
     [string]$PythonExecutable = "",
     [switch]$SkipInstaller

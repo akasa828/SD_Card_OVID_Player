@@ -4,8 +4,8 @@
 #define APP_VERSION_MAJOR 1
 #define APP_VERSION_MINOR 3
 #define APP_VERSION_PATCH 0
-#define APP_VERSION_PRERELEASE "beta.1"
-#define APP_VERSION_STRING "1.3.0-beta.1"
-#define APP_VERSION_DISPLAY "FW V1.3.0-b1"
+#define APP_VERSION_PRERELEASE "beta.2"
+#define APP_VERSION_STRING "1.3.0-beta.2"
+#define APP_VERSION_DISPLAY "FW V1.3.0-b2"
 
 #endif

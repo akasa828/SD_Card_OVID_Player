@@ -1,8 +1,8 @@
 #ifndef AppVersion
-  #define AppVersion "1.3.0-beta.1"
+  #define AppVersion "1.3.0-beta.2"
 #endif
 #ifndef WindowsVersion
-  #define WindowsVersion "1.3.0.1"
+  #define WindowsVersion "1.3.0.2"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\dist\portable\OVID Converter"

@@ -447,7 +447,7 @@ Before contributing, please read [CONTRIBUTING.md](CONTRIBUTING.md). For securit
 
 ## 📝 Latest Update
 
-The current stable firmware is **v1.2.2**; **v1.2.6** is the driver-modularization prerelease; [**v1.3.0-beta.1**](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) is the current Latest Release with the Material 3 desktop converter. It remains a test build, and GitHub's `/releases/latest` link will point to this release.
+The current development version is **v1.3.0-beta.2** and has not been released yet. [**v1.3.0-beta.1**](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) remains the current Latest Release with the Material 3 desktop converter. **v1.2.2** is the stable firmware, while **v1.2.6** is the driver-modularization prerelease.
 
 The complete version history is available in [CHANGELOG.md](CHANGELOG.md).
 

@@ -451,7 +451,7 @@ SD 卡根目录/
 
 ## 📝 最近一次更新
 
-当前稳定固件版本为 **v1.2.2**；**v1.2.6** 是驱动模块化预发布版；[**v1.3.0-beta.1**](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) 是包含 Material 3 桌面转换器的当前 Latest Release。它仍是测试版本，GitHub 的 `/releases/latest` 将指向这一版本。
+当前开发版本为 **v1.3.0-beta.2**，尚未发布；[**v1.3.0-beta.1**](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) 仍是包含 Material 3 桌面转换器的当前 Latest Release。**v1.2.2** 是稳定固件，**v1.2.6** 是驱动模块化预发布版。
 
 完整的版本记录放在 [CHANGELOG.md](CHANGELOG.md)
 

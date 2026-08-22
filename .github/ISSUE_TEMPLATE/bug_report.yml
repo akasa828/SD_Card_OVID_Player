@@ -10,7 +10,7 @@ body:
     id: version
     attributes:
       label: Firmware version or commit / 固件版本或提交
-      placeholder: v1.3.0-beta.1 or commit SHA
+      placeholder: v1.3.0-beta.2 or commit SHA
     validations:
       required: true
   - type: input
