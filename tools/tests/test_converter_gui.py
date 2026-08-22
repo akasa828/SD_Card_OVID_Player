@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -19,6 +20,10 @@ import ovid_converter_gui as converter_gui  # noqa: E402
 
 
 class ConverterGuiTests(unittest.TestCase):
+    def test_convert_page_does_not_repeat_the_app_purpose_as_a_title(self) -> None:
+        source = GUI_SOURCE.read_text(encoding="utf-8")
+        self.assertNotIn("把素材直接转换成 OLED 可以播放的 OVID 文件", source)
+
     def test_preview_image_keeps_the_previous_frame_while_decoding(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")
         self.assertIn("gapless_playback=True", source)
@@ -29,6 +34,40 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertIn("on_change=self._on_threshold_change", source)
         self.assertIn("建议先使用 128", source)
         self.assertIn("常用范围为 96–160", source)
+
+    def test_all_frame_options_refresh_the_preview(self) -> None:
+        source = GUI_SOURCE.read_text(encoding="utf-8")
+        self.assertGreaterEqual(source.count("on_change=self._on_geometry_change"), 4)
+        self.assertEqual(source.count("on_select=self._on_geometry_change"), 2)
+        self.assertIn("on_change=self._on_invert_change", source)
+        self.assertIn('label="补边与透明背景"', source)
+        self.assertIn('"跳过开头帧", 0, 0, 999999', source)
+        self.assertIn("await self._load_first_preview()", source)
+
+    def test_dropdowns_use_the_flet_select_event(self) -> None:
+        parameters = inspect.signature(converter_gui.ft.Dropdown).parameters
+        self.assertIn("on_select", parameters)
+        self.assertNotIn("on_change", parameters)
+
+    def test_geometry_preview_refresh_is_debounced(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.source_field = SimpleNamespace(value="source.png")
+        app.preview_revision = 0
+        app.preview_playing = True
+        app.preview_playback_revision = 0
+        app.preview_render_revision = 0
+        options = SimpleNamespace(validate=mock.Mock())
+        app._options = mock.Mock(return_value=options)
+        app._load_first_preview = mock.AsyncMock()
+
+        async def exercise() -> None:
+            with mock.patch.object(converter_gui.asyncio, "sleep", new=mock.AsyncMock()):
+                await app._on_geometry_change(None)
+
+        asyncio.run(exercise())
+        self.assertFalse(app.preview_playing)
+        options.validate.assert_called_once_with()
+        app._load_first_preview.assert_awaited_once_with()
 
     def test_preview_fps_validation(self) -> None:
         for value in (1, "15", 30, "120"):

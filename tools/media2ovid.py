@@ -18,6 +18,7 @@ import sys
 import warnings
 from dataclasses import dataclass
 from fractions import Fraction
+from itertools import islice
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -54,6 +55,7 @@ class ConversionOptions:
     background: str = "black"
     recursive: bool = False
     force: bool = False
+    skip_frames: int = 0
 
     def validate(self) -> None:
         if not self.source.exists():
@@ -70,6 +72,8 @@ class ConversionOptions:
             raise ValueError("阈值须在 0~255")
         if self.background not in {"black", "white"}:
             raise ValueError("背景只能是 black 或 white")
+        if self.skip_frames < 0:
+            raise ValueError("跳过开头帧数不能小于 0")
         try:
             if self.source.resolve() == self.output.resolve():
                 raise ValueError("输入和输出不能是同一个文件")
@@ -166,15 +170,21 @@ def probe_source(options: ConversionOptions) -> SourceInfo:
             raise ValueError("图片目录中没有找到受支持的图片")
         with Image.open(files[0]) as image:
             size = image.size
-        return SourceInfo(kind, len(files), len(files) / options.fps, None, size)
+        return _skip_source_info(
+            SourceInfo(kind, len(files), len(files) / options.fps, None, size), options
+        )
     if kind == "image":
         with Image.open(options.source) as image:
-            return SourceInfo(kind, 1, 1 / options.fps, None, image.size)
+            return _skip_source_info(
+                SourceInfo(kind, 1, 1 / options.fps, None, image.size), options
+            )
     if kind == "gif":
         with Image.open(options.source) as image:
             duration_ms = _gif_duration_ms(image)
             frames = max(1, math.ceil(duration_ms * options.fps / 1000))
-            return SourceInfo(kind, frames, duration_ms / 1000, None, image.size)
+            return _skip_source_info(
+                SourceInfo(kind, frames, duration_ms / 1000, None, image.size), options
+            )
 
     imageio_ffmpeg = _require_video_backend()
     reader = imageio_ffmpeg.read_frames(str(options.source), pix_fmt="rgb24")
@@ -192,7 +202,27 @@ def probe_source(options: ConversionOptions) -> SourceInfo:
     size_value = metadata.get("size")
     size = tuple(size_value) if size_value else None
     estimated = max(1, math.ceil(duration * options.fps)) if duration else None
-    return SourceInfo(kind, estimated, duration, source_fps, size)
+    return _skip_source_info(SourceInfo(kind, estimated, duration, source_fps, size), options)
+
+
+def _skip_source_info(info: SourceInfo, options: ConversionOptions) -> SourceInfo:
+    if options.skip_frames == 0:
+        return info
+    if info.frame_count is not None:
+        remaining = info.frame_count - options.skip_frames
+        if remaining <= 0:
+            raise ValueError(
+                f"跳过 {options.skip_frames} 帧后没有可转换的画面"
+            )
+        duration = remaining / options.fps
+    else:
+        remaining = None
+        duration = (
+            max(0.0, info.duration_seconds - options.skip_frames / options.fps)
+            if info.duration_seconds is not None
+            else None
+        )
+    return SourceInfo(info.kind, remaining, duration, info.source_fps, info.size)
 
 
 def _fit_rgba(image, width: int, height: int, fit: str, background: str):
@@ -334,13 +364,19 @@ def _iter_video(options: ConversionOptions) -> Iterator[object]:
 def iter_source_images(options: ConversionOptions) -> Iterator[object]:
     kind = source_kind(options.source)
     if kind == "directory":
-        yield from _iter_directory(options)
+        frames = _iter_directory(options)
     elif kind == "image":
-        yield from _iter_single_image(options)
+        frames = _iter_single_image(options)
     elif kind == "gif":
-        yield from _iter_gif(options)
+        frames = _iter_gif(options)
     else:
-        yield from _iter_video(options)
+        frames = _iter_video(options)
+    try:
+        yield from islice(frames, options.skip_frames, None)
+    finally:
+        close = getattr(frames, "close", None)
+        if close is not None:
+            close()
 
 
 def load_preview_frame(options: ConversionOptions):
@@ -419,6 +455,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--invert", action="store_true")
     parser.add_argument("--background", choices=("black", "white"), default="black")
     parser.add_argument("--recursive", action="store_true", help="递归读取图片子目录")
+    parser.add_argument(
+        "--skip-frames",
+        type=int,
+        default=0,
+        help="跳过输出时间轴开头的帧数，默认 0",
+    )
     parser.add_argument("--force", action="store_true", help="覆盖已有输出文件")
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     return parser
@@ -439,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
         background=args.background,
         recursive=args.recursive,
         force=args.force,
+        skip_frames=args.skip_frames,
     )
 
     last_percent = -1

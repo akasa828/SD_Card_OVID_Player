@@ -64,6 +64,34 @@ class MediaToOvidTests(unittest.TestCase):
             )
             self.assertEqual(summary.frame_count, 3)
 
+    def test_skip_frames_removes_only_the_leading_output_frames(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frames = root / "frames"
+            frames.mkdir()
+            for index in range(5):
+                Image.new("L", (8, 8), index * 50).save(frames / f"{index}.png")
+            options = self.options(
+                frames,
+                root / "trimmed.bin",
+                dither="threshold",
+                threshold=75,
+                skip_frames=2,
+            )
+            info = media2ovid.probe_source(options)
+            summary = media2ovid.convert_media(options)
+            self.assertEqual(3, info.frame_count)
+            self.assertEqual(3, summary.frame_count)
+
+    def test_skip_frames_rejects_empty_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            Image.new("1", (8, 8), 1).save(source)
+            options = self.options(source, root / "output.bin", skip_frames=1)
+            with self.assertRaisesRegex(ValueError, "没有可转换的画面"):
+                media2ovid.probe_source(options)
+
     def test_contain_cover_stretch_threshold_and_invert(self):
         source = Image.new("L", (4, 2), 255)
         with tempfile.TemporaryDirectory() as directory:

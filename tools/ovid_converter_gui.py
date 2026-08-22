@@ -284,17 +284,27 @@ class ConverterApp:
     def _build_controls(self) -> None:
         self.source_field = ft.TextField(label="输入素材", read_only=True, expand=True)
         self.output_field = ft.TextField(label="输出 OVID .BIN", read_only=True, expand=True)
-        self.width_field = self._number_field("宽度", self.settings.width, 1, 255)
-        self.height_field = self._number_field("高度", self.settings.height, 1, 255)
-        self.fps_field = self._number_field("FPS", self.settings.fps, 1, 120)
+        self.width_field = self._number_field(
+            "宽度", self.settings.width, 1, 255, col=3, on_change=self._on_geometry_change
+        )
+        self.height_field = self._number_field(
+            "高度", self.settings.height, 1, 255, col=3, on_change=self._on_geometry_change
+        )
+        self.fps_field = self._number_field(
+            "FPS", self.settings.fps, 1, 120, col=3, on_change=self._on_geometry_change
+        )
+        self.skip_frames_field = self._number_field(
+            "跳过开头帧", 0, 0, 999999, col=3, on_change=self._on_geometry_change
+        )
         self.fit_dropdown = ft.Dropdown(
             label="缩放方式",
             value="contain",
             options=[
-                ft.DropdownOption(key="contain", text="完整显示（黑边）"),
+                ft.DropdownOption(key="contain", text="完整显示（保留补边）"),
                 ft.DropdownOption(key="cover", text="铺满并居中裁剪"),
                 ft.DropdownOption(key="stretch", text="拉伸到目标尺寸"),
             ],
+            on_select=self._on_geometry_change,
         )
         self.dither_control = ft.SegmentedButton(
             segments=[
@@ -332,15 +342,20 @@ class ConverterApp:
             on_change=self._on_threshold_change,
         )
         self.background_dropdown = ft.Dropdown(
-            label="透明区域背景",
+            label="补边与透明背景",
             value="black",
             options=[
                 ft.DropdownOption(key="black", text="黑色"),
                 ft.DropdownOption(key="white", text="白色"),
             ],
+            on_select=self._on_geometry_change,
         )
-        self.invert_switch = ft.Switch(label="反转黑白", value=False)
-        self.recursive_switch = ft.Switch(label="递归读取图片子目录", value=False)
+        self.invert_switch = ft.Switch(
+            label="反转黑白", value=False, on_change=self._on_invert_change
+        )
+        self.recursive_switch = ft.Switch(
+            label="递归读取图片子目录", value=False, on_change=self._on_geometry_change
+        )
         self.force_switch = ft.Switch(label="允许覆盖已有输出", value=False)
 
         self.preview_image = ft.Image(
@@ -407,14 +422,24 @@ class ConverterApp:
             vertical_alignment=ft.CrossAxisAlignment.STRETCH,
         )
 
-    def _number_field(self, label: str, value: int, minimum: int, maximum: int) -> ft.TextField:
+    def _number_field(
+        self,
+        label: str,
+        value: int,
+        minimum: int,
+        maximum: int,
+        *,
+        col: int = 4,
+        on_change=None,
+    ) -> ft.TextField:
         return ft.TextField(
             label=label,
             value=str(value),
             keyboard_type=ft.KeyboardType.NUMBER,
             input_filter=ft.NumbersOnlyInputFilter(),
             helper=f"{minimum}–{maximum}",
-            col={"xs": 4},
+            col={"xs": col},
+            on_change=on_change,
         )
 
     def _card(self, title: str, icon, controls, *, col=12) -> ft.Card:
@@ -482,7 +507,14 @@ class ConverterApp:
             "转换参数",
             ft.Icons.TUNE,
             [
-                ft.ResponsiveRow([self.width_field, self.height_field, self.fps_field]),
+                ft.ResponsiveRow(
+                    [
+                        self.width_field,
+                        self.height_field,
+                        self.fps_field,
+                        self.skip_frames_field,
+                    ]
+                ),
                 self.fit_dropdown,
                 self.dither_control,
                 self.threshold_slider,
@@ -505,7 +537,6 @@ class ConverterApp:
         )
         return ft.Column(
             [
-                ft.Text("把素材直接转换成 OLED 可以播放的 OVID 文件", size=24, weight=ft.FontWeight.W_600),
                 ft.Text("无需 IrfanView、Img2Lcd 或中间 .c/.h 文件。", color=ft.Colors.ON_SURFACE_VARIANT),
                 ft.ResponsiveRow([input_card, preview_card, parameter_card, action_card], spacing=16, run_spacing=16),
             ],
@@ -621,6 +652,7 @@ class ConverterApp:
             background=self.background_dropdown.value,
             recursive=self.recursive_switch.value,
             force=self.force_switch.value,
+            skip_frames=int(self.skip_frames_field.value),
         )
 
     async def _choose_file(self, _):
@@ -851,6 +883,29 @@ class ConverterApp:
 
     async def _on_threshold_change(self, _):
         await self._rerender_current_preview(debounce=True)
+
+    async def _on_invert_change(self, _):
+        await self._rerender_current_preview()
+
+    async def _on_geometry_change(self, _):
+        """Reload the preview when an option changes frame geometry or timing."""
+        if not self.source_field.value:
+            return
+        self.preview_revision += 1
+        revision = self.preview_revision
+        self.preview_playing = False
+        self.preview_playback_revision += 1
+        self.preview_render_revision += 1
+        await asyncio.sleep(0.12)
+        if revision != self.preview_revision:
+            return
+        try:
+            options = self._options(require_output=False)
+            options.validate()
+        except (OSError, ValueError):
+            # A number field may be temporarily empty while the user is typing.
+            return
+        await self._load_first_preview()
 
     async def _rerender_current_preview(self, *, debounce: bool = False) -> None:
         if not self.source_field.value or self.preview.index < 0:
