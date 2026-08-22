@@ -121,7 +121,6 @@ def normalize_theme_mode(value: object) -> str:
 
 def material_light_theme() -> ft.Theme:
     return ft.Theme(
-        brightness=ft.Brightness.LIGHT,
         color_scheme=ft.ColorScheme(**MATERIAL_LIGHT_COLORS),
         use_material3=True,
         font_family=PRIMARY_FONT,
@@ -318,7 +317,6 @@ class ConverterApp:
         )
         self.page.theme = material_light_theme()
         self.page.dark_theme = ft.Theme(
-            brightness=ft.Brightness.DARK,
             color_scheme_seed=ft.Colors.INDIGO,
             use_material3=True,
             font_family=PRIMARY_FONT,

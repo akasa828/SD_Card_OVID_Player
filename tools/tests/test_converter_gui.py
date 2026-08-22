@@ -161,6 +161,16 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertGreaterEqual(contrast(colors["surface"], colors["on_surface"]), 4.5)
         self.assertGreaterEqual(contrast(colors["primary"], colors["on_primary"]), 4.5)
 
+    def test_material_themes_construct_with_flet_086(self) -> None:
+        light_theme = converter_gui.material_light_theme()
+        dark_theme = converter_gui.ft.Theme(
+            color_scheme_seed=converter_gui.ft.Colors.INDIGO,
+            use_material3=True,
+        )
+        self.assertIsNotNone(light_theme)
+        self.assertIsNotNone(dark_theme)
+        self.assertNotIn("brightness=", GUI_SOURCE.read_text(encoding="utf-8"))
+
     def test_light_theme_applies_immediately(self) -> None:
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.settings = SimpleNamespace(theme="system")
