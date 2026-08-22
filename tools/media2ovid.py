@@ -152,6 +152,12 @@ def _require_video_backend():
     return imageio_ffmpeg
 
 
+def ffmpeg_version() -> str:
+    """Return the bundled FFmpeg version for local conversion logs."""
+    imageio_ffmpeg = _require_video_backend()
+    return str(imageio_ffmpeg.get_ffmpeg_version())
+
+
 def natural_key(path: Path) -> list[object]:
     return [int(part) if part.isdigit() else part.casefold()
             for part in re.split(r"(\d+)", path.as_posix())]

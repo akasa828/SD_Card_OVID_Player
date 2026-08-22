@@ -24,6 +24,14 @@ except ImportError:  # pragma: no cover - CI installs converter requirements
 
 @unittest.skipIf(Image is None, "Pillow is not installed")
 class MediaToOvidTests(unittest.TestCase):
+
+    def test_ffmpeg_version_is_available_for_conversion_logs(self):
+        try:
+            version = media2ovid.ffmpeg_version()
+        except media2ovid.ConverterDependencyError:
+            self.skipTest("imageio-ffmpeg is not installed")
+        self.assertTrue(version)
+
     def options(self, source: Path, output: Path, **changes):
         values = dict(source=source, output=output, width=8, height=8, fps=2)
         values.update(changes)

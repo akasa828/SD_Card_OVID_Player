@@ -38,15 +38,24 @@ class ConverterGuiTests(unittest.TestCase):
         source = GUI_SOURCE.read_text(encoding="utf-8")
         self.assertIn("gapless_playback=True", source)
         self.assertIn(
-            "self.page.update(self.original_preview_image, self.preview_image, self.preview_label)",
+            "controls = [self.original_preview_image, self.preview_image, self.preview_label]",
             source,
         )
+        self.assertIn("self.page.update(*controls)", source)
 
     def test_threshold_has_live_preview_and_help_text(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")
         self.assertIn("on_change=self._on_threshold_change", source)
         self.assertIn("建议先使用 128", source)
         self.assertIn("常用范围为 96–160", source)
+
+    def test_timeline_and_otsu_suggestion_are_user_controlled(self) -> None:
+        source = GUI_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("self.preview_timeline = ft.Slider(", source)
+        self.assertIn("on_change_end=self._preview_seek", source)
+        self.assertIn("自动阈值建议", source)
+        self.assertIn("是否应用？", source)
+        self.assertIn("_apply_threshold_suggestion", source)
 
     def test_all_frame_options_refresh_the_preview(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")

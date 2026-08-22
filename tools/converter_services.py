@@ -260,6 +260,10 @@ def check_compatibility(
     if not parent.is_dir():
         issues.append(CompatibilityIssue("error", "output-directory", f"输出目录不存在：{parent}"))
     else:
+        if not os.access(parent, os.W_OK):
+            issues.append(
+                CompatibilityIssue("error", "output-permission", f"输出目录不可写：{parent}")
+            )
         try:
             free_bytes = shutil.disk_usage(parent).free
             if estimate is not None and free_bytes < estimate:

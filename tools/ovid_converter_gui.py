@@ -41,6 +41,7 @@ from media2ovid import (
     ConversionProgress,
     convert_media,
     estimate_output_bytes,
+    ffmpeg_version,
     iter_source_images,
     prepare_monochrome_source,
     preview_prepared_png,
@@ -555,6 +556,15 @@ class ConverterApp:
             on_change_end=self._on_trim_change,
         )
         self.trim_label = ft.Text("单张图片无需裁剪", color=ft.Colors.ON_SURFACE_VARIANT)
+        self.preview_timeline = ft.Slider(
+            min=0,
+            max=1,
+            value=0,
+            divisions=1,
+            label="{value} 秒",
+            visible=False,
+            on_change_end=self._preview_seek,
+        )
 
         self.original_preview_image = ft.Image(
             src=self._empty_preview(),
@@ -781,6 +791,7 @@ class ConverterApp:
                     alignment=ft.MainAxisAlignment.CENTER,
                     wrap=True,
                 ),
+                self.preview_timeline,
                 self.trim_slider,
                 self.trim_label,
             ],
@@ -802,6 +813,11 @@ class ConverterApp:
                             icon=ft.Icons.DELETE_OUTLINE,
                             tooltip="删除用户预设",
                             on_click=self._delete_selected_preset,
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.RESTORE,
+                            tooltip="清除用户预设并恢复内置预设",
+                            on_click=self._reset_user_presets,
                         ),
                     ]
                 ),
@@ -1263,6 +1279,8 @@ class ConverterApp:
                 self.logger.event("queue", f"start {job.options.source}")
                 try:
                     info = await asyncio.to_thread(probe_source, job.options)
+                    if job.options.source.suffix.lower() in VIDEO_SUFFIXES:
+                        self.logger.event("ffmpeg", ffmpeg_version())
                     report = await asyncio.to_thread(
                         check_compatibility,
                         job.options,
@@ -1524,7 +1542,12 @@ class ConverterApp:
                 self._configure_trim_timeline(info)
             total = info.frame_count if info.frame_count is not None else "?"
             estimate = estimate_output_bytes(options, info)
-            self._set_preview_frame(original, data, f"第 {index}/{total} 帧 · 预计 {human_size(estimate)}")
+            self._set_preview_frame(
+                original,
+                data,
+                f"第 {index}/{total} 帧 · 预计 {human_size(estimate)}",
+                index=index,
+            )
         except Exception as exc:
             if revision != self.preview_revision:
                 return
@@ -1541,7 +1564,7 @@ class ConverterApp:
                 original, data, index = await asyncio.to_thread(self.preview.next_frame)
             if revision != self.preview_revision:
                 return False
-            self._set_preview_frame(original, data, f"第 {index} 帧")
+            self._set_preview_frame(original, data, f"第 {index} 帧", index=index)
             return True
         except PreviewFinished:
             if revision != self.preview_revision:
@@ -1562,17 +1585,64 @@ class ConverterApp:
                 original, data, index = self.preview.previous_frame()
             if revision != self.preview_revision:
                 return
-            self._set_preview_frame(original, data, f"第 {index} 帧")
+            self._set_preview_frame(original, data, f"第 {index} 帧", index=index)
         except Exception as exc:
             if revision != self.preview_revision:
                 return
             self._show_error("无法读取上一帧", exc)
 
-    def _set_preview_frame(self, original: bytes, data: bytes, label: str) -> None:
+    def _set_preview_frame(
+        self,
+        original: bytes,
+        data: bytes,
+        label: str,
+        *,
+        index: int | None = None,
+    ) -> None:
         self.original_preview_image.src = original
         self.preview_image.src = data
         self.preview_label.value = label
-        self.page.update(self.original_preview_image, self.preview_image, self.preview_label)
+        controls = [self.original_preview_image, self.preview_image, self.preview_label]
+        if index is not None and self.preview_timeline.visible and self.preview.options is not None:
+            position = self.preview.options.trim_start_seconds + (index - 1) / max(
+                1, self.preview.options.fps
+            )
+            self.preview_timeline.value = min(self.preview_timeline.max, max(0.0, position))
+            controls.append(self.preview_timeline)
+        self.page.update(*controls)
+
+    async def _preview_seek(self, event) -> None:
+        if not self.source_field.value:
+            return
+        self.preview_revision += 1
+        revision = self.preview_revision
+        self.preview_playing = False
+        self.preview_playback_revision += 1
+        try:
+            options = self._options(require_output=False)
+            position = max(float(self.trim_slider.start_value), float(event.control.value))
+            if not self.trim_slider.disabled:
+                latest = max(
+                    float(self.trim_slider.start_value),
+                    float(self.trim_slider.end_value) - 1 / options.fps,
+                )
+                position = min(position, latest)
+            seek_options = replace(options, trim_start_seconds=position, skip_frames=0)
+            async with self.preview_lock:
+                info = await asyncio.to_thread(probe_source, seek_options)
+                await asyncio.to_thread(self.preview.reset, seek_options, info)
+                original, data, index = await asyncio.to_thread(self.preview.next_frame)
+            if revision != self.preview_revision:
+                return
+            self._set_preview_frame(
+                original,
+                data,
+                f"{position:.2f} 秒 · 第 {index} 帧",
+                index=index,
+            )
+        except Exception as exc:
+            if revision == self.preview_revision:
+                self._show_error("无法跳转预览", exc)
 
     async def _toggle_preview_playback(self, _):
         if self.preview_playing:
@@ -1628,6 +1698,9 @@ class ConverterApp:
                     f"• {issue.message}" for issue in report.issues if issue.severity == "error"
                 )
                 raise ValueError(errors)
+            warnings = [issue.message for issue in report.issues if issue.severity == "warning"]
+            if warnings:
+                self._show_notice("兼容性提示：" + "；".join(warnings))
         except Exception as exc:
             self._show_error("无法开始转换", exc)
             return
@@ -1652,6 +1725,8 @@ class ConverterApp:
             f"size={options.width}x{options.height} fps={options.fps} "
             f"workers={options.workers or 'auto'} fast_video={options.fast_video}",
         )
+        if options.source.suffix.lower() in VIDEO_SUFFIXES:
+            self.logger.event("ffmpeg", ffmpeg_version())
         loop = asyncio.get_running_loop()
         self.progress_render_task = asyncio.create_task(
             self._render_conversion_progress(revision, self.progress_finish_event)
@@ -1807,11 +1882,19 @@ class ConverterApp:
 
     def _configure_trim_timeline(self, info) -> None:
         if info.kind == "image" or not info.duration_seconds:
+            self.preview_timeline.visible = False
             self.trim_slider.disabled = True
             self.trim_label.value = "单张图片无需裁剪"
-            self.page.update(self.trim_slider, self.trim_label)
+            self.page.update(self.preview_timeline, self.trim_slider, self.trim_label)
             return
         duration = max(1 / max(1, int(self.fps_field.value)), info.duration_seconds)
+        self.preview_timeline.visible = True
+        self.preview_timeline.min = 0
+        self.preview_timeline.max = duration
+        self.preview_timeline.value = 0
+        self.preview_timeline.divisions = min(
+            1000, max(1, info.frame_count or round(duration * 10))
+        )
         self.trim_slider.disabled = False
         self.trim_slider.min = 0
         self.trim_slider.max = duration
@@ -1819,7 +1902,7 @@ class ConverterApp:
         self.trim_slider.end_value = duration
         self.trim_slider.divisions = min(1000, max(1, info.frame_count or round(duration * 10)))
         self.trim_label.value = f"转换范围：0.00–{duration:.2f} 秒"
-        self.page.update(self.trim_slider, self.trim_label)
+        self.page.update(self.preview_timeline, self.trim_slider, self.trim_label)
 
     async def _on_trim_change(self, _):
         start = float(self.trim_slider.start_value)
@@ -1838,13 +1921,29 @@ class ConverterApp:
             async with self.preview_lock:
                 gray = self.preview.current_grayscale().copy()
             value = await asyncio.to_thread(suggested_threshold, gray, mode)
-            self.dither_control.selected = ["threshold"]
-            self.threshold_slider.disabled = False
-            self.threshold_slider.value = value
-            self.page.update(self.dither_control, self.threshold_slider)
-            await self._rerender_current_preview()
+            self.page.show_dialog(
+                ft.AlertDialog(
+                    title="自动阈值建议",
+                    content=ft.Text(f"根据当前预览帧计算出的建议阈值为 {value}。是否应用？"),
+                    actions=[
+                        ft.TextButton("取消", on_click=lambda _: self.page.pop_dialog()),
+                        ft.FilledButton(
+                            "应用",
+                            on_click=lambda _: self._apply_threshold_suggestion(value),
+                        ),
+                    ],
+                )
+            )
         except Exception as exc:
             self._show_error("无法分析自动阈值", exc)
+
+    def _apply_threshold_suggestion(self, value: int) -> None:
+        self.page.pop_dialog()
+        self.dither_control.selected = ["threshold"]
+        self.threshold_slider.disabled = False
+        self.threshold_slider.value = value
+        self.page.update(self.dither_control, self.threshold_slider)
+        asyncio.create_task(self._rerender_current_preview())
 
     def _refresh_preset_options(self) -> None:
         if not hasattr(self, "preset_dropdown"):
@@ -1923,6 +2022,16 @@ class ConverterApp:
         self._refresh_preset_options()
         self.page.update(self.preset_dropdown)
 
+    def _reset_user_presets(self, _):
+        try:
+            self.preset_store.reset()
+            self._refresh_preset_options()
+            self.preset_dropdown.value = BUILTIN_PRESETS[0].name
+            self._apply_selected_preset(None)
+            self._show_notice("已清除用户预设并恢复内置预设")
+        except Exception as exc:
+            self._show_error("无法恢复预设", exc)
+
     async def _on_dither_change(self, _):
         self.threshold_slider.disabled = self.dither_control.selected[0] != "threshold"
         self.page.update(self.dither_control, self.threshold_slider)
@@ -1982,7 +2091,7 @@ class ConverterApp:
                 or source_revision != self.preview_revision
             ):
                 return
-            self._set_preview_frame(original, data, f"第 {index} 帧")
+            self._set_preview_frame(original, data, f"第 {index} 帧", index=index)
         except ValueError:
             return
         except Exception as exc:
