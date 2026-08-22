@@ -148,7 +148,7 @@ SD 卡根目录/
 播放器内置的两个驱动也整理成了独立项目：
 
 - [STM32-HAL-SSD1306-SH1106](https://github.com/akasa828/STM32-HAL-SSD1306-SH1106)：绘图、双缓冲、I2C DMA 和控制器适配。
-- [STM32-HAL-SPI-SD-FatFs](https://github.com/akasa828/STM32-HAL-SPI-SD-FatFs)：SPI SD 协议核心、STM32 HAL 端口和 FatFs `diskio` 对接。
+- [STM32_HAL-SPI_SD-FatFs](https://github.com/akasa828/STM32_HAL-SPI_SD-FatFs)：SPI SD 协议核心、STM32 HAL 端口和 FatFs `diskio` 对接。
 
 | 文档 | 内容 |
 |---|---|

@@ -9,7 +9,7 @@
 [← 返回项目 README](../README.md)
 
 > [!NOTE]
-> 这是保留的可选高级流程。多数用户可以直接下载 [OVID Converter v1.3.0-beta.1](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1)，从图片、图片目录、GIF 或视频直接生成 OVID `.BIN`；下面的正文不变，适合希望查看和控制每个中间步骤的人。
+> 这是保留的可选高级流程。多数用户可以直接下载 [OVID Converter v1.3.0-beta.2](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.2)，从图片、图片目录、GIF 或视频直接生成 OVID `.BIN`；下面的正文不变，适合希望查看和控制每个中间步骤的人。
 
 > 以下 拿 `Bad Apple.mp4 举例`
 

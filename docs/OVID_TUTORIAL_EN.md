@@ -9,7 +9,7 @@
 [← Back to the project README](../README_EN.md)
 
 > [!NOTE]
-> This is the preserved optional advanced workflow. Most users can download [OVID Converter v1.3.0-beta.1](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.1) and convert an image, image folder, GIF, or video directly into an OVID `.BIN`. The original instructions below remain unchanged for users who want to inspect and control each intermediate step.
+> This is the preserved optional advanced workflow. Most users can download [OVID Converter v1.3.0-beta.2](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.2) and convert an image, image folder, GIF, or video directly into an OVID `.BIN`. The original instructions below remain unchanged for users who want to inspect and control each intermediate step.
 
 > The steps below use `Bad Apple.mp4` as an example.
 
