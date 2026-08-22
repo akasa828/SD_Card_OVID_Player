@@ -428,6 +428,7 @@ class ConverterGuiTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("flet.cli build windows", source)
         self.assertIn('flet-drop-zone = { path = "tools/extensions/flet_drop_zone" }', project)
+        self.assertIn('flet-drop-zone = "tools/extensions/flet_drop_zone"', project)
         self.assertIn("DropTarget(", dart)
         self.assertIn("onDragDone", dart)
 

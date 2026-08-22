@@ -48,6 +48,7 @@
 - 新增 AI 分析包脚本，可将 Windows 便携运行时、转换器完整源码、测试、构建脚本、拖放扩展和依赖说明整理为单个 ZIP，便于在其他开发环境中继续分析和修改。
 - 新增时间基准、并行顺序、页主序一致性、队列重名、预设、播放器 CRC、拖放和完整发行配置回归测试。
 - Windows 完整发行构建强制使用 UTF-8 控制台输出，避免 Flet/Rich 的状态符号在 GitHub Actions 默认代码页下触发编码异常。
+- Windows 完整发行构建显式解析仓库内的拖放扩展，不再错误地从 PyPI 查找未发布的 `flet-drop-zone`。
 
 ### Documentation and release
 

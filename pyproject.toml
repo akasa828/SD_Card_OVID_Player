@@ -21,6 +21,9 @@ company = "riochihao"
 copyright = "Copyright (c) 2026 riochihao"
 build_number = 2
 
+[tool.flet.dev_packages]
+flet-drop-zone = "tools/extensions/flet_drop_zone"
+
 [tool.flet.app]
 path = "tools"
 module = "ovid_converter_gui"
