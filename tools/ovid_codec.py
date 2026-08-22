@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared OVID container writer used by all conversion tools."""
+"""Shared OVID container reader and writer used by all conversion tools."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import struct
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import BinaryIO, Callable, Iterable, Iterator
 
 
 MAGIC = b"OVID"
@@ -22,6 +22,10 @@ class OvidWriteCancelled(RuntimeError):
     """Raised when the caller cancels a streaming write."""
 
 
+class OvidFormatError(ValueError):
+    """Raised when an OVID container is truncated or has invalid metadata."""
+
+
 @dataclass(frozen=True)
 class OvidSummary:
     path: Path
@@ -32,6 +36,44 @@ class OvidSummary:
     frame_bytes: int
     file_bytes: int
     version: int
+
+
+@dataclass(frozen=True)
+class OvidHeader:
+    width: int
+    height: int
+    frame_count: int
+    fps: int
+    frame_bytes: int
+    version: int
+    flags: int
+
+    @property
+    def record_bytes(self) -> int:
+        return self.frame_bytes + (4 if self.version == OVID_V2 else 0)
+
+    @property
+    def expected_file_bytes(self) -> int:
+        return HEADER_SIZE + self.frame_count * self.record_bytes
+
+
+@dataclass(frozen=True)
+class OvidFrame:
+    index: int
+    data: bytes
+    crc_valid: bool
+
+
+@dataclass(frozen=True)
+class OvidValidation:
+    path: Path
+    header: OvidHeader
+    file_bytes: int
+    bad_frames: tuple[int, ...]
+
+    @property
+    def valid(self) -> bool:
+        return not self.bad_frames and self.file_bytes == self.header.expected_file_bytes
 
 
 def crc16_ccitt(data: bytes) -> int:
@@ -65,6 +107,114 @@ def make_header(width: int, height: int, count: int, fps: int, version: int) -> 
     first14 = struct.pack("<4sBBBBIH", MAGIC, width, height, version, flags, count, fps)
     header_crc = crc16_ccitt(first14) if version == OVID_V2 else 0
     return first14 + struct.pack("<H", header_crc)
+
+
+def parse_header(raw: bytes) -> OvidHeader:
+    """Parse and validate one 16-byte OVID v1/v2 header."""
+    if len(raw) != HEADER_SIZE:
+        raise OvidFormatError("文件太短，不足 16 字节 OVID 头部")
+    magic, width, height, version, flags, count, fps, stored_crc = struct.unpack(
+        "<4sBBBBIHH", raw
+    )
+    if magic != MAGIC:
+        raise OvidFormatError(f"magic 是 {magic!r}，不是 {MAGIC!r}")
+    if width == 0 or height == 0 or count == 0 or not 1 <= fps <= 120:
+        raise OvidFormatError(
+            f"头部字段非法（{width}x{height}, {count} 帧, {fps} fps）"
+        )
+    if version == OVID_V1:
+        if flags != 0 or stored_crc != 0:
+            raise OvidFormatError("OVID v1 flags 或保留字段非法")
+    elif version == OVID_V2:
+        if flags != OVID_FLAG_CRC32:
+            raise OvidFormatError(f"OVID v2 flags 非法：{flags:#x}")
+        actual_crc = crc16_ccitt(raw[:14])
+        if stored_crc != actual_crc:
+            raise OvidFormatError(
+                f"OVID 头部 CRC16 不匹配：{stored_crc:#06x} != {actual_crc:#06x}"
+            )
+    else:
+        raise OvidFormatError(f"不支持的 OVID 版本字段：{version}")
+    return OvidHeader(
+        width,
+        height,
+        count,
+        fps,
+        frame_bytes(width, height),
+        version,
+        flags,
+    )
+
+
+class OvidReader:
+    """Stream an OVID file without loading all frames into memory."""
+
+    def __init__(self, path: Path | str):
+        self.path = Path(path)
+        self._stream: BinaryIO | None = None
+        self.header: OvidHeader | None = None
+
+    def __enter__(self) -> "OvidReader":
+        self._stream = self.path.open("rb")
+        try:
+            self.header = parse_header(self._stream.read(HEADER_SIZE))
+        except BaseException:
+            self._stream.close()
+            self._stream = None
+            raise
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        if self._stream is not None:
+            self._stream.close()
+        self._stream = None
+
+    def _require_open(self) -> tuple[BinaryIO, OvidHeader]:
+        if self._stream is None or self.header is None:
+            raise RuntimeError("OvidReader 必须在 with 语句中使用")
+        return self._stream, self.header
+
+    def seek_frame(self, index: int) -> None:
+        stream, header = self._require_open()
+        if not 0 <= index < header.frame_count:
+            raise IndexError(f"帧索引超出范围：{index}")
+        stream.seek(HEADER_SIZE + index * header.record_bytes)
+
+    def read_frame(self, index: int) -> OvidFrame:
+        stream, header = self._require_open()
+        self.seek_frame(index)
+        data = stream.read(header.frame_bytes)
+        if len(data) != header.frame_bytes:
+            raise OvidFormatError(f"第 {index + 1} 帧数据被截断")
+        crc_valid = True
+        if header.version == OVID_V2:
+            raw_crc = stream.read(4)
+            if len(raw_crc) != 4:
+                raise OvidFormatError(f"第 {index + 1} 帧 CRC32 被截断")
+            stored_crc = struct.unpack("<I", raw_crc)[0]
+            crc_valid = stored_crc == (zlib.crc32(data) & 0xFFFFFFFF)
+        return OvidFrame(index, data, crc_valid)
+
+    def iter_frames(self) -> Iterator[OvidFrame]:
+        _, header = self._require_open()
+        for index in range(header.frame_count):
+            yield self.read_frame(index)
+
+    def validate(self) -> OvidValidation:
+        _, header = self._require_open()
+        file_bytes = self.path.stat().st_size
+        if file_bytes != header.expected_file_bytes:
+            raise OvidFormatError(
+                f"文件长度 {file_bytes} B，应为 {header.expected_file_bytes} B"
+            )
+        bad_frames = tuple(frame.index for frame in self.iter_frames() if not frame.crc_valid)
+        return OvidValidation(self.path, header, file_bytes, bad_frames)
+
+
+def validate_ovid(path: Path | str) -> OvidValidation:
+    """Validate metadata, length, and all available frame CRC values."""
+    with OvidReader(path) as reader:
+        return reader.validate()
 
 
 def write_ovid(

@@ -13,6 +13,7 @@ TOOLS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS_DIR))
 
 import h2bin  # noqa: E402
+import ovid_codec  # noqa: E402
 
 
 class H2BinTests(unittest.TestCase):
@@ -72,6 +73,23 @@ class H2BinTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()), \
                     contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(h2bin.cmd_info(Namespace(file=str(corrupt))), 1)
+
+    def test_shared_reader_supports_random_access_and_crc_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "reader.bin"
+            frames = [bytes([value] * 8) for value in (0x00, 0x55, 0xFF)]
+            with contextlib.redirect_stdout(io.StringIO()):
+                h2bin.write_ovid(output, frames, 8, 8, 15)
+            with ovid_codec.OvidReader(output) as reader:
+                self.assertEqual(3, reader.header.frame_count)
+                self.assertEqual(frames[1], reader.read_frame(1).data)
+                self.assertTrue(reader.validate().valid)
+
+            damaged = bytearray(output.read_bytes())
+            damaged[ovid_codec.HEADER_SIZE + (8 + 4)] ^= 0x01
+            output.write_bytes(damaged)
+            with ovid_codec.OvidReader(output) as reader:
+                self.assertEqual((1,), reader.validate().bad_frames)
 
     def test_header_arrays_are_read_without_loading_the_whole_file(self):
         source_text = """

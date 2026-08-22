@@ -30,10 +30,7 @@ OVID v2 每帧数据后再附加 4 字节小端 CRC32；固件发现坏帧时保
 import argparse
 import re
 import sys
-import zlib
 from pathlib import Path
-
-import struct
 
 from ovid_codec import (
     HEADER_SIZE,
@@ -41,6 +38,8 @@ from ovid_codec import (
     OVID_FLAG_CRC32,
     OVID_V1,
     OVID_V2,
+    OvidFormatError,
+    OvidReader,
     crc16_ccitt,
     frame_bytes,
     make_header,
@@ -202,49 +201,23 @@ def cmd_from_header(args) -> int:
 def cmd_info(args) -> int:
     """读回一个 .bin，校验头部并报告基本信息（用于确认烧到卡上的文件没坏）。"""
     p = Path(args.file)
-    with p.open("rb") as stream:
-        raw = stream.read(HEADER_SIZE)
-    if len(raw) < HEADER_SIZE:
-        print("错误：文件太短，不足 16 字节头部", file=sys.stderr)
+    try:
+        with OvidReader(p) as reader:
+            result = reader.validate()
+            header = result.header
+    except OvidFormatError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
         return 1
-    magic, w, h, version, flags, count, fps, header_crc = struct.unpack("<4sBBBBIHH", raw)
-    if magic != MAGIC:
-        print(f"错误：magic 是 {magic!r}，不是 {MAGIC!r}", file=sys.stderr)
+    print(
+        f"{p.name}: OVID v{2 if header.version == OVID_V2 else 1}  "
+        f"{header.width}x{header.height}  {header.frame_count} 帧  "
+        f"{header.fps} fps  每帧 {header.frame_bytes} B"
+    )
+    print_firmware_requirements(header.width, header.height)
+    if result.bad_frames:
+        print(f"  错误：{len(result.bad_frames)} 帧 CRC32 不匹配", file=sys.stderr)
         return 1
-
-    if w == 0 or h == 0 or count == 0 or not 1 <= fps <= 120:
-        print(f"错误：头部字段非法（{w}x{h}, {count} 帧, {fps} fps）", file=sys.stderr)
-        return 1
-
-    is_v1 = version == OVID_V1 and flags == 0 and header_crc == 0
-    is_v2 = (version == OVID_V2 and flags == OVID_FLAG_CRC32 and
-             header_crc == crc16_ccitt(raw[:14]))
-    if not is_v1 and not is_v2:
-        print(f"错误：OVID 版本/flags/header CRC 非法（version={version}, flags={flags:#x}）",
-              file=sys.stderr)
-        return 1
-
-    per = frame_bytes(w, h)
-    record = per + (4 if is_v2 else 0)
-    actual = p.stat().st_size - HEADER_SIZE
-    print(f"{p.name}: OVID v{2 if is_v2 else 1}  {w}x{h}  {count} 帧  {fps} fps  每帧 {per} B")
-    print_firmware_requirements(w, h)
-    if actual != count * record:
-        print(f"  警告：数据区 {actual} B，与 {count}×{record}={count * record} B 不符 "
-              f"(差 {actual - count * record})", file=sys.stderr)
-        return 1
-    if is_v2:
-        bad = 0
-        with p.open("rb") as stream:
-            stream.seek(HEADER_SIZE)
-            for _ in range(count):
-                frame = stream.read(per)
-                stored = struct.unpack("<I", stream.read(4))[0]
-                if stored != (zlib.crc32(frame) & 0xFFFFFFFF):
-                    bad += 1
-        if bad:
-            print(f"  错误：{bad} 帧 CRC32 不匹配", file=sys.stderr)
-            return 1
+    if header.version == OVID_V2:
         print("  头部 CRC16、文件长度和全部帧 CRC32 正确")
     else:
         print("  v1 头部与数据长度一致（v1 无内容 CRC）")
