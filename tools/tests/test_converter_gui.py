@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -20,6 +21,14 @@ import ovid_converter_gui as converter_gui  # noqa: E402
 
 
 class ConverterGuiTests(unittest.TestCase):
+    def test_fixed_threshold_is_the_default_dither_mode(self) -> None:
+        source = GUI_SOURCE.read_text(encoding="utf-8")
+        threshold = source.index('ft.Segment(\n                    value="threshold"')
+        floyd = source.index('ft.Segment(value="floyd"')
+        self.assertLess(threshold, floyd)
+        self.assertIn('selected=["threshold"]', source)
+        self.assertIn("disabled=False", source)
+
     def test_convert_page_does_not_repeat_the_app_purpose_as_a_title(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")
         self.assertNotIn("把素材直接转换成 OLED 可以播放的 OVID 文件", source)
@@ -86,6 +95,88 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertEqual(0.0, delay)
         self.assertEqual(10.08, deadline)
 
+    def test_progress_smoothing_is_monotonic_and_does_not_overshoot(self) -> None:
+        current = 0.0
+        values = []
+        for _ in range(20):
+            current = converter_gui.smooth_progress_value(current, 0.75, 0.016)
+            values.append(current)
+        self.assertEqual(values, sorted(values))
+        self.assertGreater(values[-1], 0.0)
+        self.assertLessEqual(values[-1], 0.75)
+        self.assertEqual(0.75, converter_gui.smooth_progress_value(0.75, 0.4, 0.016))
+
+    def test_progress_renderer_updates_controls_without_page_navigation(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.busy = True
+        app.conversion_revision = 1
+        app.latest_conversion_progress = (
+            1,
+            converter_gui.ConversionProgress(25, 100, 4096),
+        )
+        app.progress_display_ratio = 0.0
+        app.progress_finish_deadline = None
+        app.progress_bar = SimpleNamespace(value=0.0)
+        app.progress_text = SimpleNamespace(value="")
+        app.page_index = 0
+        app.page = SimpleNamespace(update=mock.Mock())
+
+        async def exercise() -> None:
+            finish = asyncio.Event()
+            task = asyncio.create_task(app._render_conversion_progress(1, finish))
+            await asyncio.sleep(0.04)
+            app.busy = False
+            await task
+
+        asyncio.run(exercise())
+        self.assertGreater(app.page.update.call_count, 0)
+        self.assertGreater(app.progress_bar.value, 0.0)
+        self.assertLessEqual(app.progress_bar.value, 0.25)
+        self.assertIn("25.0%", app.progress_text.value)
+
+    def test_invalid_saved_theme_falls_back_to_system(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Path(directory) / "settings.json"
+            settings.write_text('{"theme": "broken"}', encoding="utf-8")
+            with mock.patch.dict(
+                converter_gui.os.environ,
+                {"FLET_APP_STORAGE_DATA": directory},
+            ):
+                self.assertEqual("system", converter_gui.load_settings().theme)
+
+    def test_material_light_palette_has_readable_primary_text(self) -> None:
+        def luminance(color: str) -> float:
+            channels = [int(color[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+            linear = [
+                value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+                for value in channels
+            ]
+            return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+        def contrast(first: str, second: str) -> float:
+            bright, dark = sorted((luminance(first), luminance(second)), reverse=True)
+            return (bright + 0.05) / (dark + 0.05)
+
+        colors = converter_gui.MATERIAL_LIGHT_COLORS
+        self.assertGreaterEqual(contrast(colors["surface"], colors["on_surface"]), 4.5)
+        self.assertGreaterEqual(contrast(colors["primary"], colors["on_primary"]), 4.5)
+
+    def test_light_theme_applies_immediately(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.settings = SimpleNamespace(theme="system")
+        theme_button = SimpleNamespace(icon=None)
+        app.page = SimpleNamespace(
+            theme_mode=None,
+            appbar=SimpleNamespace(actions=[theme_button]),
+            update=mock.Mock(),
+        )
+
+        app._apply_theme("light")
+
+        self.assertEqual("light", app.settings.theme)
+        self.assertEqual(converter_gui.ft.ThemeMode.LIGHT, app.page.theme_mode)
+        app.page.update.assert_called_once_with()
+
     def test_stale_preview_task_cannot_replace_current_status(self) -> None:
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.preview_revision = 1
@@ -148,7 +239,9 @@ class ConverterGuiTests(unittest.TestCase):
         app.page_host = SimpleNamespace(content=None)
         app.navigation_rail = SimpleNamespace(selected_index=None)
         app.navigation_bar = SimpleNamespace(selected_index=None)
-        app.page = SimpleNamespace(schedule_update=lambda: None)
+        app.preview_needs_reload = False
+        app.busy = False
+        app.page = SimpleNamespace(update=lambda: None)
         app._show_page(99)
 
         self.assertEqual(0, app.page_index)

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import math
 import os
 import threading
 from dataclasses import asdict, dataclass, replace
@@ -38,6 +40,44 @@ NAVIGATION_ITEMS = (
     (ft.Icons.SETTINGS, "设置"),
     (ft.Icons.INFO, "关于"),
 )
+VALID_THEME_MODES = frozenset({"system", "light", "dark"})
+PROGRESS_FRAME_INTERVAL = 0.016
+PROGRESS_EASING_SECONDS = 0.12
+PROGRESS_FINISH_SECONDS = 0.25
+MATERIAL_LIGHT_COLORS = {
+    "primary": "#6750A4",
+    "on_primary": "#FFFFFF",
+    "primary_container": "#EADDFF",
+    "on_primary_container": "#21005D",
+    "secondary": "#625B71",
+    "on_secondary": "#FFFFFF",
+    "secondary_container": "#E8DEF8",
+    "on_secondary_container": "#1D192B",
+    "tertiary": "#7D5260",
+    "on_tertiary": "#FFFFFF",
+    "tertiary_container": "#FFD8E4",
+    "on_tertiary_container": "#31111D",
+    "error": "#B3261E",
+    "on_error": "#FFFFFF",
+    "error_container": "#F9DEDC",
+    "on_error_container": "#410E0B",
+    "surface": "#FFFBFE",
+    "on_surface": "#1C1B1F",
+    "on_surface_variant": "#49454F",
+    "outline": "#79747E",
+    "outline_variant": "#CAC4D0",
+    "shadow": "#000000",
+    "inverse_surface": "#313033",
+    "on_inverse_surface": "#F4EFF4",
+    "inverse_primary": "#D0BCFF",
+    "surface_dim": "#DED8E1",
+    "surface_bright": "#FFFBFE",
+    "surface_container_lowest": "#FFFFFF",
+    "surface_container_low": "#F7F2FA",
+    "surface_container": "#F3EDF7",
+    "surface_container_high": "#ECE6F0",
+    "surface_container_highest": "#E6E0E9",
+}
 
 
 class PreviewFinished(RuntimeError):
@@ -61,6 +101,32 @@ def advance_preview_deadline(deadline: float, now: float, interval: float) -> tu
     if deadline <= now:
         return 0.0, now
     return deadline - now, deadline
+
+
+def smooth_progress_value(current: float, target: float, elapsed: float) -> float:
+    """Ease monotonically toward the latest worker progress without overshoot."""
+    current = min(1.0, max(0.0, current))
+    target = min(1.0, max(current, target))
+    if current == target:
+        return target
+    alpha = 1.0 - math.exp(-max(0.0, elapsed) / PROGRESS_EASING_SECONDS)
+    value = current + (target - current) * alpha
+    return target if target - value < 0.0005 else min(target, value)
+
+
+def normalize_theme_mode(value: object) -> str:
+    theme = str(value).lower()
+    return theme if theme in VALID_THEME_MODES else "system"
+
+
+def material_light_theme() -> ft.Theme:
+    return ft.Theme(
+        brightness=ft.Brightness.LIGHT,
+        color_scheme=ft.ColorScheme(**MATERIAL_LIGHT_COLORS),
+        use_material3=True,
+        font_family=PRIMARY_FONT,
+        text_theme=_app_text_theme(),
+    )
 
 
 def _app_text_style(weight: ft.FontWeight = ft.FontWeight.W_400) -> ft.TextStyle:
@@ -131,7 +197,7 @@ def load_settings() -> AppSettings:
             height=min(255, max(1, int(values.get("height", 64)))),
             fps=min(120, max(1, int(values.get("fps", 15)))),
             output_directory=str(values.get("output_directory", "")),
-            theme=str(values.get("theme", "system")),
+            theme=normalize_theme_mode(values.get("theme", "system")),
         )
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return AppSettings()
@@ -224,6 +290,13 @@ class ConverterApp:
         self.preview_playback_revision = 0
         self.preview_render_revision = 0
         self.preview_playing = False
+        self.preview_needs_reload = False
+        self.conversion_revision = 0
+        self.latest_conversion_progress: tuple[int, ConversionProgress] | None = None
+        self.progress_display_ratio = 0.0
+        self.progress_finish_deadline: float | None = None
+        self.progress_finish_event: asyncio.Event | None = None
+        self.progress_render_task: asyncio.Task | None = None
         self.busy = False
         self.page_index = 0
         self.file_picker = ft.FilePicker()
@@ -243,19 +316,14 @@ class ConverterApp:
             supported_locales=[ft.Locale("zh", "CN")],
             current_locale=ft.Locale("zh", "CN"),
         )
-        self.page.theme = ft.Theme(
-            color_scheme_seed=ft.Colors.INDIGO,
-            use_material3=True,
-            font_family=PRIMARY_FONT,
-            text_theme=_app_text_theme(),
-        )
+        self.page.theme = material_light_theme()
         self.page.dark_theme = ft.Theme(
+            brightness=ft.Brightness.DARK,
             color_scheme_seed=ft.Colors.INDIGO,
             use_material3=True,
             font_family=PRIMARY_FONT,
             text_theme=_app_text_theme(),
         )
-        self._apply_theme(self.settings.theme)
         self.page.padding = 0
         self.page.window.width = 1120
         self.page.window.height = 760
@@ -276,7 +344,7 @@ class ConverterApp:
                 ),
             ],
         )
-        self._apply_theme(self.settings.theme)
+        self._apply_theme(self.settings.theme, refresh=False)
         self.page.on_resize = self._on_resize
         self.page.add(self.shell)
         self._on_resize()
@@ -308,7 +376,6 @@ class ConverterApp:
         )
         self.dither_control = ft.SegmentedButton(
             segments=[
-                ft.Segment(value="floyd", label=ft.Text("Floyd 抖动"), icon=ft.Icons.GRAIN),
                 ft.Segment(
                     value="threshold",
                     label=ft.Row(
@@ -328,8 +395,9 @@ class ConverterApp:
                     ),
                     icon=ft.Icons.CONTRAST,
                 ),
+                ft.Segment(value="floyd", label=ft.Text("Floyd 抖动"), icon=ft.Icons.GRAIN),
             ],
-            selected=["floyd"],
+            selected=["threshold"],
             on_change=self._on_dither_change,
         )
         self.threshold_slider = ft.Slider(
@@ -338,7 +406,7 @@ class ConverterApp:
             divisions=255,
             value=128,
             label="阈值 {value}",
-            disabled=True,
+            disabled=False,
             on_change=self._on_threshold_change,
         )
         self.background_dropdown = ft.Dropdown(
@@ -824,6 +892,12 @@ class ConverterApp:
             return
 
         self.busy = True
+        self.conversion_revision += 1
+        revision = self.conversion_revision
+        self.latest_conversion_progress = None
+        self.progress_display_ratio = 0.0
+        self.progress_finish_deadline = None
+        self.progress_finish_event = asyncio.Event()
         self.cancel_event.clear()
         self.convert_button.disabled = True
         self.cancel_button.visible = True
@@ -832,9 +906,15 @@ class ConverterApp:
         self.progress_text.value = "正在准备转换…"
         self.page.update()
         loop = asyncio.get_running_loop()
+        self.progress_render_task = asyncio.create_task(
+            self._render_conversion_progress(revision, self.progress_finish_event)
+        )
 
         def progress(value: ConversionProgress) -> None:
-            loop.call_soon_threadsafe(self._apply_progress, value)
+            # A single assignment under the GIL is enough here. The renderer
+            # samples only the newest value, so a fast converter cannot flood
+            # the asyncio event queue with one callback per frame.
+            self.latest_conversion_progress = (revision, value)
 
         try:
             summary = await asyncio.to_thread(
@@ -843,38 +923,125 @@ class ConverterApp:
                 progress=progress,
                 cancelled=self.cancel_event.is_set,
             )
+            self.latest_conversion_progress = (
+                revision,
+                ConversionProgress(summary.frame_count, summary.frame_count, summary.file_bytes),
+            )
+            self.progress_finish_deadline = loop.time() + PROGRESS_FINISH_SECONDS
+            try:
+                await asyncio.wait_for(
+                    self.progress_finish_event.wait(),
+                    timeout=PROGRESS_FINISH_SECONDS + 0.1,
+                )
+            except TimeoutError:
+                self.progress_display_ratio = 1.0
             self.progress_bar.value = 1
             self.progress_text.value = (
                 f"完成：{summary.frame_count} 帧 · {human_size(summary.file_bytes)} · {summary.path.name}"
             )
+            if self.page_index == 0:
+                self.page.update(self.progress_bar, self.progress_text)
             self._show_message("转换完成", f"OVID 文件已保存到：\n{summary.path}")
         except ConversionCancelled:
             self.progress_text.value = "转换已取消，临时文件已清理"
+            if self.page_index == 0:
+                self.page.update(self.progress_text)
         except Exception as exc:
             self.progress_text.value = "转换失败"
+            if self.page_index == 0:
+                self.page.update(self.progress_text)
             self._show_error("转换失败", exc)
         finally:
             self.busy = False
             self.convert_button.disabled = False
             self.cancel_button.visible = False
+            await self._stop_progress_renderer()
             self.page.update()
 
-    def _apply_progress(self, value: ConversionProgress) -> None:
-        if value.ratio is None:
-            self.progress_bar.value = None
-            self.progress_text.value = f"已转换 {value.completed_frames} 帧 · {human_size(value.output_bytes)}"
-        else:
-            self.progress_bar.value = value.ratio
-            self.progress_text.value = (
-                f"{value.ratio * 100:.0f}% · {value.completed_frames}/{value.total_frames} 帧 · "
-                f"{human_size(value.output_bytes)}"
-            )
-        self.page.schedule_update()
+    async def _render_conversion_progress(
+        self,
+        revision: int,
+        finish_event: asyncio.Event,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        last_time = loop.time()
+        last_completed = -1
+        try:
+            while self.busy and revision == self.conversion_revision:
+                now = loop.time()
+                elapsed = max(0.0, now - last_time)
+                last_time = now
+                current = self.latest_conversion_progress
+                if current is not None and current[0] == revision:
+                    value = current[1]
+                    target = value.ratio
+                    if target is None:
+                        self.progress_bar.value = None
+                    elif self.progress_finish_deadline is not None:
+                        remaining = self.progress_finish_deadline - now
+                        if remaining <= 0:
+                            self.progress_display_ratio = 1.0
+                        else:
+                            fraction = min(1.0, elapsed / max(remaining, PROGRESS_FRAME_INTERVAL))
+                            self.progress_display_ratio += (
+                                1.0 - self.progress_display_ratio
+                            ) * fraction
+                        self.progress_bar.value = self.progress_display_ratio
+                    else:
+                        self.progress_display_ratio = smooth_progress_value(
+                            self.progress_display_ratio,
+                            target,
+                            elapsed,
+                        )
+                        self.progress_bar.value = self.progress_display_ratio
+
+                    if target is None:
+                        text = (
+                            f"已转换 {value.completed_frames} 帧 · "
+                            f"{human_size(value.output_bytes)}"
+                        )
+                    else:
+                        text = (
+                            f"{target * 100:.1f}% · "
+                            f"{value.completed_frames}/{value.total_frames} 帧 · "
+                            f"{human_size(value.output_bytes)}"
+                        )
+                    text_changed = value.completed_frames != last_completed
+                    if text_changed:
+                        self.progress_text.value = text
+                        last_completed = value.completed_frames
+                    if self.page_index == 0 and (
+                        target is not None or text_changed
+                    ):
+                        self.page.update(self.progress_bar, self.progress_text)
+
+                    if (
+                        self.progress_finish_deadline is not None
+                        and self.progress_display_ratio >= 0.9995
+                    ):
+                        self.progress_display_ratio = 1.0
+                        self.progress_bar.value = 1.0
+                        if self.page_index == 0:
+                            self.page.update(self.progress_bar, self.progress_text)
+                        finish_event.set()
+                await asyncio.sleep(PROGRESS_FRAME_INTERVAL)
+        except asyncio.CancelledError:
+            raise
+
+    async def _stop_progress_renderer(self) -> None:
+        task = self.progress_render_task
+        self.progress_render_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     def _cancel_conversion(self, _):
         self.cancel_event.set()
         self.progress_text.value = "正在取消…"
-        self.page.update()
+        if self.page_index == 0:
+            self.page.update(self.progress_text)
 
     async def _on_dither_change(self, _):
         self.threshold_slider.disabled = self.dither_control.selected[0] != "threshold"
@@ -961,6 +1128,9 @@ class ConverterApp:
             self.height_field.value = str(height)
             self.fps_field.value = str(fps)
             self._apply_theme(self.settings.theme)
+            if self.source_field.value:
+                self.preview_revision += 1
+                self.preview_needs_reload = True
             self._show_message("设置已保存", "新的默认参数将在当前窗口和下次启动时使用。")
         except Exception as exc:
             self._show_error("无法保存设置", exc)
@@ -976,7 +1146,9 @@ class ConverterApp:
         except OSError:
             pass
 
-    def _apply_theme(self, value: str) -> None:
+    def _apply_theme(self, value: str, *, refresh: bool = True) -> None:
+        value = normalize_theme_mode(value)
+        self.settings.theme = value
         modes = {
             "system": ft.ThemeMode.SYSTEM,
             "light": ft.ThemeMode.LIGHT,
@@ -986,7 +1158,8 @@ class ConverterApp:
         if self.page.appbar:
             icons = {"system": ft.Icons.BRIGHTNESS_AUTO, "light": ft.Icons.LIGHT_MODE, "dark": ft.Icons.DARK_MODE}
             self.page.appbar.actions[0].icon = icons.get(value, ft.Icons.BRIGHTNESS_AUTO)
-        self.page.schedule_update()
+        if refresh:
+            self.page.update()
 
     def _show_page(self, index: int) -> None:
         pages = [self.convert_page, self.settings_page, self.about_page]
@@ -996,14 +1169,17 @@ class ConverterApp:
         self.page_host.content = pages[index]
         self.navigation_rail.selected_index = index
         self.navigation_bar.selected_index = index
-        self.page.schedule_update()
+        self.page.update()
+        if index == 0 and self.preview_needs_reload and not self.busy:
+            self.preview_needs_reload = False
+            asyncio.create_task(self._load_first_preview())
 
     def _on_resize(self, _=None) -> None:
         width = self.page.width or self.page.window.width or 1120
         compact = width < 800
         self.navigation_rail.visible = not compact
         self.page.navigation_bar = self.navigation_bar if compact else None
-        self.page.schedule_update()
+        self.page.update()
 
     def _show_error(self, title: str, error: Exception) -> None:
         self.page.show_dialog(

@@ -28,6 +28,12 @@ class MediaToOvidTests(unittest.TestCase):
         values.update(changes)
         return media2ovid.ConversionOptions(**values)
 
+    def test_fixed_threshold_is_the_library_and_cli_default(self):
+        options = media2ovid.ConversionOptions(Path("input.png"), Path("output.bin"))
+        arguments = media2ovid.build_parser().parse_args(["input.png", "output.bin"])
+        self.assertEqual("threshold", options.dither)
+        self.assertEqual("threshold", arguments.dither)
+
     def test_monochrome_pixels_are_packed_page_major(self):
         image = Image.new("1", (2, 9), 0)
         image.putpixel((0, 0), 1)

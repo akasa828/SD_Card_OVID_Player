@@ -342,6 +342,8 @@ Download OVID Converter
 
 The portable build runs after extraction. The installer provides English and Simplified Chinese UI, a Start Menu entry, and an optional desktop shortcut. Both distributions include their runtime, Pillow, and FFmpeg, so Python is not required.
 
+The current `v1.3.0-beta.2` development build uses a fixed threshold of `128` by default, with Floyd–Steinberg dithering still available in the conversion options. The `beta.1` downloads above retain the previous default.
+
 > [!WARNING]
 > The Windows packages are currently unsigned, so SmartScreen may report an unknown publisher. Download them only from this repository's Release page and verify them against `SHA256SUMS.txt` from the same Release.
 
