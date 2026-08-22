@@ -1311,7 +1311,12 @@ class ConverterApp:
                         await asyncio.sleep(0.1)
                     summary = await worker
                     self.queue.update(job.id, state="completed", summary=summary)
-                    self.logger.event("queue", f"completed {summary.path}")
+                    speed = (
+                        f" average_fps={job.progress.average_fps:.2f}"
+                        if job.progress is not None
+                        else ""
+                    )
+                    self.logger.event("queue", f"completed {summary.path}{speed}")
                 except ConversionCancelled:
                     self.queue.update(job.id, state="cancelled")
                     self.logger.event("queue", f"cancelled {job.options.source}")
@@ -1746,6 +1751,12 @@ class ConverterApp:
                 cancelled=self.cancel_event.is_set,
                 source_info=info,
             )
+            final_speed = (
+                self.latest_conversion_progress[1].average_fps
+                if self.latest_conversion_progress is not None
+                and self.latest_conversion_progress[0] == revision
+                else 0.0
+            )
             self.latest_conversion_progress = (
                 revision,
                 ConversionProgress(summary.frame_count, summary.frame_count, summary.file_bytes),
@@ -1767,7 +1778,8 @@ class ConverterApp:
             self._show_message("转换完成", f"OVID 文件已保存到：\n{summary.path}")
             self.logger.event(
                 "convert",
-                f"completed frames={summary.frame_count} bytes={summary.file_bytes} path={summary.path}",
+                f"completed frames={summary.frame_count} bytes={summary.file_bytes} "
+                f"average_fps={final_speed:.2f} path={summary.path}",
             )
             self._open_player_path(summary.path, show_page=False)
         except ConversionCancelled:

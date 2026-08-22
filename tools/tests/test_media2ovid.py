@@ -287,6 +287,15 @@ class MediaToOvidTests(unittest.TestCase):
             raw = summary.path.read_bytes()[:16]
             self.assertEqual(struct.unpack("<4sBBBBIHH", raw)[0], b"OVID")
 
+            fast_options = self.options(
+                source,
+                root / "video-fast.bin",
+                fps=2,
+                fast_video=True,
+            )
+            fast_summary = media2ovid.convert_media(fast_options)
+            self.assertEqual(fast_summary.frame_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
