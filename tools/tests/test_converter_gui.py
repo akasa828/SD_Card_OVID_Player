@@ -171,6 +171,15 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertIsNotNone(dark_theme)
         self.assertNotIn("brightness=", GUI_SOURCE.read_text(encoding="utf-8"))
 
+    def test_light_theme_uses_dark_text_on_light_surfaces(self) -> None:
+        theme = converter_gui.material_light_theme()
+        colors = converter_gui.MATERIAL_LIGHT_COLORS
+        self.assertEqual(colors["on_surface"], theme.text_theme.body_medium.color)
+        self.assertEqual(colors["on_surface"], theme.text_theme.title_large.color)
+        self.assertEqual(colors["surface"], theme.scaffold_bgcolor)
+        self.assertEqual(colors["surface_container"], theme.card_bgcolor)
+        self.assertEqual(colors["on_surface_variant"], theme.hint_color)
+
     def test_light_theme_applies_immediately(self) -> None:
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.settings = SimpleNamespace(theme="system")

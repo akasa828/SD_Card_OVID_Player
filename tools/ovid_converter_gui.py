@@ -124,38 +124,47 @@ def material_light_theme() -> ft.Theme:
         color_scheme=ft.ColorScheme(**MATERIAL_LIGHT_COLORS),
         use_material3=True,
         font_family=PRIMARY_FONT,
-        text_theme=_app_text_theme(),
+        text_theme=_app_text_theme(MATERIAL_LIGHT_COLORS["on_surface"]),
+        scaffold_bgcolor=MATERIAL_LIGHT_COLORS["surface"],
+        canvas_color=MATERIAL_LIGHT_COLORS["surface"],
+        card_bgcolor=MATERIAL_LIGHT_COLORS["surface_container"],
+        divider_color=MATERIAL_LIGHT_COLORS["outline_variant"],
+        hint_color=MATERIAL_LIGHT_COLORS["on_surface_variant"],
     )
 
 
-def _app_text_style(weight: ft.FontWeight = ft.FontWeight.W_400) -> ft.TextStyle:
+def _app_text_style(
+    weight: ft.FontWeight = ft.FontWeight.W_400,
+    color: str | None = None,
+) -> ft.TextStyle:
     """Keep Latin and Simplified Chinese text on the same visual weight."""
     return ft.TextStyle(
         weight=weight,
+        color=color,
         font_family=PRIMARY_FONT,
         font_family_fallback=[SIMPLIFIED_CHINESE_FONT],
     )
 
 
-def _app_text_theme() -> ft.TextTheme:
+def _app_text_theme(color: str | None = None) -> ft.TextTheme:
     regular = ft.FontWeight.W_400
     medium = ft.FontWeight.W_500
     return ft.TextTheme(
-        body_large=_app_text_style(regular),
-        body_medium=_app_text_style(regular),
-        body_small=_app_text_style(regular),
-        display_large=_app_text_style(medium),
-        display_medium=_app_text_style(medium),
-        display_small=_app_text_style(medium),
-        headline_large=_app_text_style(medium),
-        headline_medium=_app_text_style(medium),
-        headline_small=_app_text_style(medium),
-        label_large=_app_text_style(medium),
-        label_medium=_app_text_style(medium),
-        label_small=_app_text_style(medium),
-        title_large=_app_text_style(medium),
-        title_medium=_app_text_style(medium),
-        title_small=_app_text_style(medium),
+        body_large=_app_text_style(regular, color),
+        body_medium=_app_text_style(regular, color),
+        body_small=_app_text_style(regular, color),
+        display_large=_app_text_style(medium, color),
+        display_medium=_app_text_style(medium, color),
+        display_small=_app_text_style(medium, color),
+        headline_large=_app_text_style(medium, color),
+        headline_medium=_app_text_style(medium, color),
+        headline_small=_app_text_style(medium, color),
+        label_large=_app_text_style(medium, color),
+        label_medium=_app_text_style(medium, color),
+        label_small=_app_text_style(medium, color),
+        title_large=_app_text_style(medium, color),
+        title_medium=_app_text_style(medium, color),
+        title_small=_app_text_style(medium, color),
     )
 
 
@@ -320,7 +329,7 @@ class ConverterApp:
             color_scheme_seed=ft.Colors.INDIGO,
             use_material3=True,
             font_family=PRIMARY_FONT,
-            text_theme=_app_text_theme(),
+            text_theme=_app_text_theme("#E6E1E5"),
         )
         self.page.padding = 0
         self.page.window.width = 1120
