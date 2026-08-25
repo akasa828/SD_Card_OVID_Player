@@ -415,6 +415,62 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertIn('ft.ExpansionTile(\n                    title=ft.Text("更多设置"', source)
         self.assertIn('"跳帧、补边背景、目录读取和输出覆盖"', source)
 
+    def test_task_rows_clip_long_names_and_errors(self) -> None:
+        source = GUI_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("tooltip=str(job.options.source)", source)
+        self.assertIn("max_lines=2 if job.error else 1", source)
+        self.assertGreaterEqual(source.count("overflow=ft.TextOverflow.ELLIPSIS"), 2)
+
+    def test_keyboard_shortcuts_open_files_and_start_conversion(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.exit_dialog_open = False
+        app.convert_button = SimpleNamespace(disabled=False)
+        app._choose_file = mock.AsyncMock()
+        app._start_conversion = mock.AsyncMock()
+
+        async def exercise() -> None:
+            await app._on_keyboard_event(
+                SimpleNamespace(key="O", ctrl=True, alt=False, meta=False)
+            )
+            await app._on_keyboard_event(
+                SimpleNamespace(key="Enter", ctrl=True, alt=False, meta=False)
+            )
+
+        asyncio.run(exercise())
+        app._choose_file.assert_awaited_once_with(None)
+        app._start_conversion.assert_awaited_once_with(None)
+
+    def test_window_close_requires_confirmation_while_busy(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.busy = True
+        app.exit_dialog_open = False
+        app.page = SimpleNamespace(show_dialog=mock.Mock())
+        app._shutdown_and_exit = mock.AsyncMock()
+
+        asyncio.run(
+            app._on_window_event(
+                SimpleNamespace(type=converter_gui.ft.WindowEventType.CLOSE)
+            )
+        )
+
+        self.assertTrue(app.exit_dialog_open)
+        app.page.show_dialog.assert_called_once()
+        app._shutdown_and_exit.assert_not_awaited()
+
+    def test_idle_window_close_releases_the_application(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.busy = False
+        app.exit_dialog_open = False
+        app._shutdown_and_exit = mock.AsyncMock()
+
+        asyncio.run(
+            app._on_window_event(
+                SimpleNamespace(type=converter_gui.ft.WindowEventType.CLOSE)
+            )
+        )
+
+        app._shutdown_and_exit.assert_awaited_once()
+
     def test_empty_queue_disables_conversion_action(self) -> None:
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.queue = converter_gui.ConversionQueue()

@@ -563,6 +563,8 @@ class ConverterApp:
         self.player_timeline_dragging = False
         self.resume_player_after_drag = False
         self.player_time_task: asyncio.Task | None = None
+        self.exit_dialog_open = False
+        self.exit_after_conversion_stop = False
         self.page_index = 0
         self.file_picker = ft.FilePicker()
         self.page.services.append(self.file_picker)
@@ -606,6 +608,9 @@ class ConverterApp:
         )
         self._apply_theme(self.settings.theme, refresh=False)
         self.page.on_resize = self._on_resize
+        self.page.on_keyboard_event = self._on_keyboard_event
+        self.page.window.prevent_close = True
+        self.page.window.on_event = self._on_window_event
         self.page.add(self.shell)
         self._on_resize()
 
@@ -769,6 +774,7 @@ class ConverterApp:
             "转换所选",
             icon=ft.Icons.MOVIE,
             on_click=self._start_conversion,
+            tooltip="转换所选任务 (Ctrl+Enter)",
             disabled=True,
         )
         self.cancel_button = ft.OutlinedButton(
@@ -936,7 +942,12 @@ class ConverterApp:
     def _build_convert_page(self):
         source_actions = ft.Row(
             [
-                ft.OutlinedButton("选择文件", icon=ft.Icons.INSERT_DRIVE_FILE, on_click=self._choose_file),
+                ft.OutlinedButton(
+                    "选择文件",
+                    icon=ft.Icons.INSERT_DRIVE_FILE,
+                    tooltip="选择文件 (Ctrl+O)",
+                    on_click=self._choose_file,
+                ),
                 ft.OutlinedButton("选择图片目录", icon=ft.Icons.FOLDER_OPEN, on_click=self._choose_directory),
             ],
             wrap=True,
@@ -1513,6 +1524,7 @@ class ConverterApp:
                 f"{job.options.width}×{job.options.height} · {job.options.fps} FPS · "
                 f"{self._task_time_range(job.options)}"
             )
+            state_text = self._queue_state_text(job)
             clickable = ft.Container(
                 expand=True,
                 padding=ft.Padding.symmetric(vertical=4),
@@ -1521,9 +1533,21 @@ class ConverterApp:
                 ),
                 content=ft.Column(
                     [
-                        ft.Text(job.options.source.name, weight=ft.FontWeight.W_600),
+                        ft.Text(
+                            job.options.source.name,
+                            weight=ft.FontWeight.W_600,
+                            max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                            tooltip=str(job.options.source),
+                        ),
                         ft.Text(details, size=12, color=ft.Colors.ON_SURFACE_VARIANT),
-                        ft.Text(self._queue_state_text(job), color=ft.Colors.ON_SURFACE_VARIANT),
+                        ft.Text(
+                            state_text,
+                            color=ft.Colors.ON_SURFACE_VARIANT,
+                            max_lines=2 if job.error else 1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                            tooltip=state_text if job.error else None,
+                        ),
                         ft.ProgressBar(value=progress, visible=job.state == "running"),
                     ],
                     spacing=3,
@@ -2428,6 +2452,8 @@ class ConverterApp:
             await self._stop_progress_renderer()
             self._refresh_queue_view()
             self.page.update()
+            if self.exit_after_conversion_stop:
+                await self._shutdown_and_exit()
 
     async def _render_conversion_progress(
         self,
@@ -2831,6 +2857,78 @@ class ConverterApp:
             self.page.appbar.actions[0].icon = icons.get(value, ft.Icons.BRIGHTNESS_AUTO)
         if refresh:
             self.page.update()
+
+    async def _on_keyboard_event(self, event: ft.KeyboardEvent) -> None:
+        if self.exit_dialog_open or event.alt or event.meta:
+            return
+        key = str(event.key).casefold()
+        if event.ctrl and key == "o":
+            await self._choose_file(None)
+        elif (
+            event.ctrl
+            and key in {"enter", "return", "numpad enter"}
+            and not self.convert_button.disabled
+        ):
+            await self._start_conversion(None)
+
+    async def _on_window_event(self, event: ft.WindowEvent) -> None:
+        event_type = getattr(event, "type", None)
+        if isinstance(event_type, ft.WindowEventType):
+            event_type = event_type.value
+        if event_type != ft.WindowEventType.CLOSE.value:
+            return
+        if not self.busy:
+            await self._shutdown_and_exit()
+            return
+        if self.exit_dialog_open:
+            return
+        self.exit_dialog_open = True
+        self.page.show_dialog(
+            ft.AlertDialog(
+                title="转换仍在进行",
+                icon=ft.Icon(ft.Icons.WARNING_AMBER),
+                content=ft.Text("现在退出会取消当前任务。程序会先清理临时文件，再关闭窗口。"),
+                actions=[
+                    ft.TextButton("继续转换", on_click=self._dismiss_exit_dialog),
+                    ft.FilledButton("停止并退出", on_click=self._confirm_exit),
+                ],
+            )
+        )
+
+    def _dismiss_exit_dialog(self, _) -> None:
+        self.exit_dialog_open = False
+        self.page.pop_dialog()
+
+    async def _confirm_exit(self, _) -> None:
+        self.exit_dialog_open = False
+        self.page.pop_dialog()
+        if not self.busy:
+            await self._shutdown_and_exit()
+            return
+        self.exit_after_conversion_stop = True
+        self._cancel_conversion(None)
+        self.task_action_status.value = "正在停止任务并退出…"
+        self.page.update(self.task_action_status)
+
+    async def _shutdown_and_exit(self) -> None:
+        self.exit_after_conversion_stop = False
+        self.preview_playing = False
+        self.player_playing = False
+        self.preview_revision += 1
+        self.preview_playback_revision += 1
+        self.player_revision += 1
+        for task in (
+            self.trim_label_task,
+            self.preview_time_task,
+            self.player_time_task,
+            self.progress_render_task,
+        ):
+            if task is not None and not task.done():
+                task.cancel()
+        self.preview.close()
+        self.player.close()
+        self.logger.close()
+        await self.page.window.destroy()
 
     def _show_page(self, index: int) -> None:
         pages = [

@@ -339,6 +339,12 @@ class ConversionLogger:
     def export(self, path: Path) -> None:
         path.write_text(self.read(limit=10_000_000), encoding="utf-8")
 
+    def close(self) -> None:
+        """Release log files before the desktop application exits."""
+        for handler in tuple(self.logger.handlers):
+            self.logger.removeHandler(handler)
+            handler.close()
+
 
 @dataclass
 class QueueJob:

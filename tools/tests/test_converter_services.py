@@ -2,6 +2,7 @@ import tempfile
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]
@@ -108,6 +109,16 @@ class ConverterServicesTests(unittest.TestCase):
             self.assertEqual("queued", job.state)
             self.assertEqual(16, job.options.width)
             self.assertEqual("stm32f103-128x32", job.target_profile)
+
+    def test_conversion_logger_releases_handlers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logger = services.ConversionLogger(Path(directory))
+            handlers = tuple(logger.logger.handlers)
+            self.assertTrue(handlers)
+            with mock.patch.object(handlers[0], "close", wraps=handlers[0].close) as close:
+                logger.close()
+            self.assertEqual([], logger.logger.handlers)
+            close.assert_called_once()
 
     def test_frozen_queue_jobs_cannot_be_edited(self):
         with tempfile.TemporaryDirectory() as directory:
