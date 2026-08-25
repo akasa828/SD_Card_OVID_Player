@@ -1957,7 +1957,7 @@ class ConverterApp:
     def _open_player_path(self, path: Path, *, show_page: bool) -> None:
         header = self.player.open(path)
         self.player_path.value = str(path)
-        self.player_slider.disabled = False
+        self.player_slider.disabled = header.frame_count <= 1
         self.player_slider.min = 0
         self.player_slider.max = max(1 / header.fps, (header.frame_count - 1) / header.fps)
         self.player_slider.value = 0
@@ -2020,7 +2020,12 @@ class ConverterApp:
 
     async def _player_seek(self, _):
         try:
-            index = round(float(self.player_slider.value) * self.player.header.fps)
+            if self.player.header is None:
+                return
+            index = min(
+                self.player.header.frame_count - 1,
+                max(0, round(float(self.player_slider.value) * self.player.header.fps)),
+            )
             self._draw_player_frame(index)
         except Exception as exc:
             self._show_error("无法定位 OVID 帧", exc)
@@ -2056,6 +2061,8 @@ class ConverterApp:
             self.player_play_button.icon = ft.Icons.PLAY_ARROW
             self.page.update(self.player_play_button)
             return
+        if self.player.index >= self.player.header.frame_count - 1:
+            self._draw_player_frame(0)
         self.player_playing = True
         self.player_revision += 1
         revision = self.player_revision

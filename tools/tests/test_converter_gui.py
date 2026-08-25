@@ -574,6 +574,45 @@ class ConverterGuiTests(unittest.TestCase):
         app._player_next.assert_awaited_once_with(None)
         app._player_first.assert_awaited_once_with(None)
 
+    def test_player_seek_clamps_single_frame_files(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.player = SimpleNamespace(header=SimpleNamespace(frame_count=1, fps=15))
+        app.player_slider = SimpleNamespace(value=10.0)
+        app.player_timeline_dragging = True
+        app.resume_player_after_drag = False
+        app._draw_player_frame = mock.Mock()
+        app._show_error = mock.Mock()
+
+        asyncio.run(app._player_seek(None))
+
+        app._draw_player_frame.assert_called_once_with(0)
+        app._show_error.assert_not_called()
+
+    def test_player_restarts_from_the_first_frame_after_finishing(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.player = SimpleNamespace(
+            header=SimpleNamespace(frame_count=3, fps=120),
+            index=2,
+        )
+        app.player_playing = False
+        app.player_revision = 0
+        app.player_play_button = SimpleNamespace(icon=None)
+        app.page = SimpleNamespace(update=mock.Mock())
+        drawn = []
+
+        def draw(index: int) -> None:
+            drawn.append(index)
+            app.player.index = index
+
+        app._draw_player_frame = draw
+        app._show_error = mock.Mock()
+
+        asyncio.run(app._toggle_player(None))
+
+        self.assertEqual([0, 1, 2], drawn)
+        self.assertFalse(app.player_playing)
+        app._show_error.assert_not_called()
+
     def test_window_close_requires_confirmation_while_busy(self) -> None:
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.busy = True
