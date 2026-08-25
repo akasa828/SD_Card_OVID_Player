@@ -1505,12 +1505,20 @@ class ConverterApp:
             actions: list[ft.Control] = [
                 ft.IconButton(
                     icon=ft.Icons.VISIBILITY_OUTLINED,
-                    tooltip="在上方预览",
+                    tooltip="编辑并预览源素材",
                     on_click=lambda _, job_id=job.id: asyncio.create_task(
                         self._activate_task(job_id, scroll_target="preview-card")
                     ),
                 )
             ]
+            if job.state == "completed" and job.summary is not None:
+                actions.append(
+                    ft.IconButton(
+                        icon=ft.Icons.PLAY_CIRCLE_OUTLINE,
+                        tooltip="播放生成的 OVID",
+                        on_click=lambda _, job_id=job.id: self._play_completed_job(job_id),
+                    )
+                )
             if job.state in {"failed", "cancelled"}:
                 actions.append(
                     ft.IconButton(
@@ -1665,6 +1673,15 @@ class ConverterApp:
         self.queue.retry(job_id)
         self.queue.set_selected(job_id, True)
         self._refresh_queue_view()
+
+    def _play_completed_job(self, job_id: str) -> None:
+        try:
+            job = self.queue.find(job_id)
+            if job.summary is None:
+                raise ValueError("当前任务还没有可播放的输出")
+            self._open_player_path(job.summary.path, show_page=True)
+        except Exception as exc:
+            self._show_error("无法播放转换结果", exc)
 
     def _remove_queue_job(self, job_id: str) -> None:
         try:

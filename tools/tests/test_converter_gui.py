@@ -425,6 +425,21 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertIn("max_lines=2 if job.error else 1", source)
         self.assertGreaterEqual(source.count("overflow=ft.TextOverflow.ELLIPSIS"), 2)
 
+    def test_completed_task_can_open_its_generated_ovid(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.queue = converter_gui.ConversionQueue()
+        job = app.queue.add(
+            converter_gui.ConversionOptions(Path("clip.mp4"), Path("clip.BIN"))
+        )
+        job.summary = SimpleNamespace(path=Path("clip.BIN"))
+        app._open_player_path = mock.Mock()
+        app._show_error = mock.Mock()
+
+        app._play_completed_job(job.id)
+
+        app._open_player_path.assert_called_once_with(Path("clip.BIN"), show_page=True)
+        app._show_error.assert_not_called()
+
     def test_keyboard_shortcuts_open_files_and_start_conversion(self) -> None:
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.exit_dialog_open = False
