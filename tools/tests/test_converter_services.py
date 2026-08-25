@@ -96,6 +96,32 @@ class ConverterServicesTests(unittest.TestCase):
             queue.unfreeze(first.id)
             self.assertFalse(first.frozen)
 
+    def test_completed_job_uses_a_new_output_when_overwrite_is_disabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = services.ConversionQueue()
+            job = queue.add(self.options(root))
+            job.options.output.write_bytes(b"completed")
+            queue.update(job.id, state="completed")
+
+            frozen = queue.freeze_selected()
+
+            self.assertEqual((job,), frozen)
+            self.assertEqual("output_2.BIN", job.options.output.name)
+            self.assertEqual("queued", job.state)
+
+    def test_completed_job_keeps_output_when_overwrite_is_enabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = services.ConversionQueue()
+            job = queue.add(self.options(root, force=True))
+            job.options.output.write_bytes(b"completed")
+            queue.update(job.id, state="completed")
+
+            queue.freeze_selected()
+
+            self.assertEqual("output.BIN", job.options.output.name)
+
     def test_queue_option_edits_reset_completed_jobs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

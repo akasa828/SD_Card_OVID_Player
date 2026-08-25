@@ -550,6 +550,38 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertTrue(converter_gui.is_supported_source(Path("frame.PNG")))
         self.assertFalse(converter_gui.is_supported_source(Path("notes.txt")))
 
+    def test_sources_from_different_folders_keep_local_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first" / "a.mp4"
+            second = root / "second" / "b.gif"
+            first.parent.mkdir()
+            second.parent.mkdir()
+            first.touch()
+            second.touch()
+
+            app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+            app.settings = SimpleNamespace(output_directory="")
+            app.queue = converter_gui.ConversionQueue()
+            app.target_dropdown = SimpleNamespace(value="stm32f103-128x64")
+            app.logger = SimpleNamespace(event=mock.Mock())
+            app._options_for_source = mock.Mock(
+                side_effect=lambda source, output, use_current_trim: converter_gui.ConversionOptions(
+                    source,
+                    output,
+                )
+            )
+            app._refresh_queue_view = mock.Mock()
+            app._show_page = mock.Mock()
+            app._activate_task = mock.AsyncMock()
+            app._show_notice = mock.Mock()
+
+            asyncio.run(app._add_sources([first, second]))
+
+            jobs = app.queue.snapshot()
+            self.assertEqual(first.with_suffix(".BIN"), jobs[0].options.output)
+            self.assertEqual(second.with_suffix(".BIN"), jobs[1].options.output)
+
     def test_font_assets_are_added_to_windows_package(self) -> None:
         source = PACKAGE_SOURCE.read_text(encoding="utf-8")
         self.assertIn('--add-data "${assetsPath}:assets"', source)

@@ -1418,15 +1418,16 @@ class ConverterApp:
         sources = [Path(source) for source in sources]
         if not sources:
             return
-        output_dir = (
+        configured_output_dir = (
             Path(self.settings.output_directory)
             if self.settings.output_directory
-            else sources[0].parent
+            else None
         )
         added: list[QueueJob] = []
         for source in sources:
             if not is_supported_source(source):
                 continue
+            output_dir = configured_output_dir or source.parent
             output = output_dir / f"{source.stem}.BIN"
             job = self.queue.add(
                 self._options_for_source(source, output, use_current_trim=False),
@@ -2315,8 +2316,14 @@ class ConverterApp:
         if not jobs:
             self._show_error("无法开始转换", ValueError("请先添加并勾选至少一个任务"))
             return
-        if self.active_task_id and any(job.id == self.active_task_id for job in jobs):
+        active_job = next(
+            (job for job in jobs if job.id == self.active_task_id),
+            None,
+        )
+        if active_job is not None:
+            self.output_field.value = str(active_job.options.output)
             self._set_editor_locked(True)
+            self.page.update(self.output_field)
         self.busy = True
         self.current_batch_ids = tuple(job.id for job in jobs)
         self.stop_batch_requested = False

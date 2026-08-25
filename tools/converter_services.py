@@ -464,7 +464,20 @@ class ConversionQueue:
                 for job in self._jobs
                 if job.selected and job.state != "running" and not job.frozen
             )
+            selected_ids = {job.id for job in jobs}
+            reserved_outputs = {
+                job.options.output.resolve()
+                for job in self._jobs
+                if job.id not in selected_ids
+            }
             for job in jobs:
+                if not job.options.force:
+                    output = unique_output_path(
+                        job.options.output,
+                        reserved=reserved_outputs,
+                    )
+                    job.options = replace(job.options, output=output)
+                    reserved_outputs.add(output.resolve())
                 if job.state in {"completed", "failed", "cancelled"}:
                     job.state = "queued"
                     job.progress = None
