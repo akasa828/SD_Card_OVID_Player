@@ -1,5 +1,6 @@
-import tempfile
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -54,6 +55,33 @@ class ConverterServicesTests(unittest.TestCase):
                 store.upsert(services.BUILTIN_PRESETS[0])
             store.reset()
             self.assertEqual([], store.load_user_presets())
+
+    def test_invalid_user_preset_does_not_hide_valid_presets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "presets.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {"name": "Broken", "width": 0},
+                        {"name": "Good", "width": 96, "height": 64, "fps": 20},
+                        {"name": "Unknown field", "future_option": True},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            store = services.PresetStore(path)
+
+            presets = store.load_user_presets()
+
+            self.assertEqual(["Good"], [preset.name for preset in presets])
+
+    def test_user_preset_validation_rejects_invalid_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = services.PresetStore(Path(directory) / "presets.json")
+            with self.assertRaisesRegex(ValueError, "FPS"):
+                store.upsert(services.ConversionPreset("Too fast", fps=121))
+            with self.assertRaisesRegex(ValueError, "黑白算法"):
+                store.upsert(services.ConversionPreset("Unknown", dither="random"))
 
     def test_queue_snapshots_options_and_generates_unique_output(self):
         with tempfile.TemporaryDirectory() as directory:

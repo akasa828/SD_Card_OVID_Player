@@ -94,6 +94,26 @@ class ConversionPreset:
             fast_video=self.fast_video,
         )
 
+    def validate(self) -> None:
+        if not self.name.strip():
+            raise ValueError("预设名称不能为空")
+        if not 1 <= self.width <= 255 or not 1 <= self.height <= 255:
+            raise ValueError("预设宽高须在 1–255")
+        if not 1 <= self.fps <= 120:
+            raise ValueError("预设 FPS 须在 1–120")
+        if self.fit not in {"contain", "cover", "stretch"}:
+            raise ValueError(f"未知缩放方式：{self.fit}")
+        if self.dither not in {"threshold", "floyd"}:
+            raise ValueError(f"未知黑白算法：{self.dither}")
+        if not 0 <= self.threshold <= 255:
+            raise ValueError("预设阈值须在 0–255")
+        if self.background not in {"black", "white"}:
+            raise ValueError(f"未知补边背景：{self.background}")
+        if not 0 <= self.workers <= 8:
+            raise ValueError("预设线程数须在 0–8")
+        if self.target_profile not in TARGET_PROFILES:
+            raise ValueError(f"未知目标屏幕：{self.target_profile}")
+
 
 BUILTIN_PRESETS = (
     ConversionPreset("STM32F103 · 128×64 · 15 FPS", builtin=True),
@@ -128,16 +148,21 @@ class PresetStore:
     def load_user_presets(self) -> list[ConversionPreset]:
         try:
             values = json.loads(self.path.read_text(encoding="utf-8"))
-            presets = []
-            for value in values:
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return []
+        if not isinstance(values, list):
+            return []
+        presets = []
+        for value in values:
+            try:
                 value = dict(value)
                 value["builtin"] = False
                 preset = ConversionPreset(**value)
-                if preset.name.strip():
-                    presets.append(preset)
-            return presets
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            return []
+                preset.validate()
+            except (TypeError, ValueError):
+                continue
+            presets.append(preset)
+        return presets
 
     def all_presets(self) -> list[ConversionPreset]:
         return [*BUILTIN_PRESETS, *self.load_user_presets()]
@@ -150,8 +175,7 @@ class PresetStore:
         os.replace(temporary, self.path)
 
     def upsert(self, preset: ConversionPreset) -> None:
-        if not preset.name.strip():
-            raise ValueError("预设名称不能为空")
+        preset.validate()
         if any(item.name == preset.name and item.builtin for item in BUILTIN_PRESETS):
             raise ValueError("内置预设不能被覆盖")
         values = self.load_user_presets()
