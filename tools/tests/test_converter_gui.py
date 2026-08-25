@@ -1,4 +1,5 @@
 import asyncio
+import io
 import inspect
 import tempfile
 from pathlib import Path
@@ -253,14 +254,17 @@ class ConverterGuiTests(unittest.TestCase):
 
     def test_preview_end_does_not_raise_stop_iteration_into_future(self) -> None:
         session = converter_gui.PreviewSession()
-        session.options = object()
+        session.options = converter_gui.ConversionOptions(
+            Path("source.png"),
+            Path("output.bin"),
+        )
         session.iterator = iter([object()])
 
         async def consume_preview() -> None:
             with (
                 mock.patch.object(converter_gui, "prepare_monochrome_source", return_value=object()),
                 mock.patch.object(converter_gui, "preview_prepared_png", return_value=b"frame"),
-                mock.patch.object(converter_gui, "source_preview_png", return_value=b"source"),
+                mock.patch.object(converter_gui, "source_preview_image", return_value=b"source"),
             ):
                 self.assertEqual((b"source", b"frame", 1), await asyncio.to_thread(session.next_frame))
                 with self.assertRaises(converter_gui.PreviewFinished) as raised:
@@ -269,6 +273,51 @@ class ConverterGuiTests(unittest.TestCase):
 
         asyncio.run(consume_preview())
         session.close()
+
+    def test_source_preview_uses_compact_jpeg_transport(self) -> None:
+        from PIL import Image
+
+        encoded = converter_gui.source_preview_image(Image.new("RGB", (640, 360), "#6750A4"))
+        self.assertTrue(encoded.startswith(b"\xff\xd8"))
+        with Image.open(io.BytesIO(encoded)) as preview:
+            self.assertLessEqual(preview.width, 320)
+            self.assertLessEqual(preview.height, 180)
+
+    def test_preview_prefetch_renders_oled_frame_off_the_ui_loop(self) -> None:
+        from PIL import Image
+
+        session = converter_gui.PreviewSession()
+        options = converter_gui.ConversionOptions(
+            Path("source.png"),
+            Path("output.bin"),
+            width=8,
+            height=8,
+        )
+        with mock.patch.object(
+            converter_gui,
+            "preview_prepared_png",
+            return_value=b"oled",
+        ) as render:
+            entry = session._prepare_entry(Image.new("RGB", (16, 16), "white"), options)
+        self.assertEqual(b"oled", entry[3])
+        render.assert_called_once()
+
+    def test_stale_prefetch_render_does_not_replace_cached_frame(self) -> None:
+        session = converter_gui.PreviewSession()
+        session.options = converter_gui.ConversionOptions(
+            Path("source.png"),
+            Path("output.bin"),
+            threshold=96,
+        )
+        cached = (b"first", object(), ("threshold", 96, False), b"first-preview")
+        stale = (b"second", object(), ("threshold", 128, False), b"stale-preview")
+        session.frames = [cached]
+        session.index = 0
+        with mock.patch.object(converter_gui, "preview_prepared_png", return_value=b"updated"):
+            original, rendered, updated = session._render(stale)
+        self.assertEqual((b"second", b"updated"), (original, rendered))
+        self.assertEqual(cached, session.frames[0])
+        self.assertEqual(("threshold", 96, False), updated[2])
 
     def test_preview_prefetch_reuses_duplicate_video_frames(self) -> None:
         session = converter_gui.PreviewSession()
@@ -279,9 +328,9 @@ class ConverterGuiTests(unittest.TestCase):
         session.prefetch_limit = 3
         prepared: list[object] = []
 
-        def prepare(image):
+        def prepare(image, options):
             prepared.append(image)
-            return str(id(image)).encode(), image
+            return str(id(image)).encode(), image, ("threshold", 128, False), b"preview"
 
         with mock.patch.object(session, "_prepare_entry", side_effect=prepare):
             first = session._next_prepared_entry()
@@ -317,7 +366,7 @@ class ConverterGuiTests(unittest.TestCase):
             source=Path("source.png"),
             output=Path("output.bin"),
         )
-        session.frames = [(b"source", object())]
+        session.frames = [(b"source", object(), ("threshold", 128, False), b"preview")]
         session.index = 0
         with mock.patch.object(converter_gui, "preview_prepared_png", return_value=b"updated"):
             original, data, index = session.rerender_current("threshold", 96, True)
@@ -357,6 +406,44 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertIn('"应用到已勾选项"', source)
         self.assertNotIn("def _build_queue_page", source)
         self.assertIn("allow_multiple=True", source)
+
+    def test_conversion_page_keeps_primary_action_visible(self) -> None:
+        source = GUI_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("self.convert_scroll = ft.Column(", source)
+        self.assertIn("task_bar = ft.Container(", source)
+        self.assertIn("return ft.Column([self.convert_scroll, task_bar]", source)
+        self.assertIn('ft.ExpansionTile(\n                    title=ft.Text("更多设置"', source)
+        self.assertIn('"跳帧、补边背景、目录读取和输出覆盖"', source)
+
+    def test_empty_queue_disables_conversion_action(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.queue = converter_gui.ConversionQueue()
+        app.active_task_id = None
+        app.busy = False
+        app.queue_list = converter_gui.ft.Column()
+        app.queue_status = converter_gui.ft.Text()
+        app.queue_empty_state = converter_gui.ft.Container()
+        app.convert_button = converter_gui.ft.FilledButton()
+        app.select_all_button = converter_gui.ft.TextButton()
+        app.select_none_button = converter_gui.ft.TextButton()
+        app.clear_completed_button = converter_gui.ft.TextButton()
+        app.apply_selected_button = converter_gui.ft.OutlinedButton()
+        app.task_action_status = converter_gui.ft.Text()
+        app.page = SimpleNamespace(update=mock.Mock())
+
+        app._refresh_queue_view()
+
+        self.assertTrue(app.queue_empty_state.visible)
+        self.assertTrue(app.convert_button.disabled)
+        self.assertEqual("添加素材后即可开始转换", app.task_action_status.value)
+
+        job = app.queue.add(
+            converter_gui.ConversionOptions(Path("clip.mp4"), Path("clip.bin"))
+        )
+        app.active_task_id = job.id
+        app._refresh_queue_view()
+        self.assertFalse(app.queue_empty_state.visible)
+        self.assertFalse(app.convert_button.disabled)
 
     def test_task_controls_use_independent_option_snapshots(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")

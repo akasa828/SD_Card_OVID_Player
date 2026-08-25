@@ -152,6 +152,13 @@ def _require_video_backend():
     return imageio_ffmpeg
 
 
+def _close_video_reader(reader) -> None:
+    """Close imageio-ffmpeg readers without leaking its Windows pipe warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResourceWarning)
+        reader.close()
+
+
 def ffmpeg_version() -> str:
     """Return the bundled FFmpeg version for local conversion logs."""
     imageio_ffmpeg = _require_video_backend()
@@ -254,12 +261,7 @@ def probe_source(options: ConversionOptions) -> SourceInfo:
     try:
         metadata = next(reader)
     finally:
-        # imageio-ffmpeg 0.6.0 leaves already-finished Windows pipe wrappers to
-        # Popen finalization. Closing the generator is still correct; silence
-        # only that upstream ResourceWarning after the child has exited.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", ResourceWarning)
-            reader.close()
+        _close_video_reader(reader)
     source_fps = float(metadata.get("fps") or 0) or None
     duration = float(metadata.get("duration") or 0) or None
     size_value = metadata.get("size")
@@ -432,7 +434,7 @@ def _iter_video(options: ConversionOptions) -> Iterator[object]:
                     yield image
                     output_index += 1
     finally:
-        reader.close()
+        _close_video_reader(reader)
 
 
 def _iter_video_fast(options: ConversionOptions) -> Iterator[object]:
@@ -466,7 +468,7 @@ def _iter_video_fast(options: ConversionOptions) -> Iterator[object]:
             for raw in reader:
                 yield Image.frombytes("RGB", tuple(size), raw)
     finally:
-        reader.close()
+        _close_video_reader(reader)
 
 
 def iter_source_images(
@@ -556,10 +558,15 @@ def _processed_frames(
     images = iter_source_images(options, info)
     workers = resolved_worker_count(options)
     if workers == 1:
-        for image in images:
-            if cancelled is not None and cancelled():
-                raise ConversionCancelled("转换已取消")
-            yield process_image(image, options)
+        try:
+            for image in images:
+                if cancelled is not None and cancelled():
+                    raise ConversionCancelled("转换已取消")
+                yield process_image(image, options)
+        finally:
+            close = getattr(images, "close", None)
+            if close is not None:
+                close()
         return
 
     executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ovid-frame")

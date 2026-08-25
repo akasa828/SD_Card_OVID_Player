@@ -273,6 +273,32 @@ class MediaToOvidTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertFalse(output.with_name(output.name + ".part").exists())
 
+    def test_single_worker_closes_source_iterator_after_cancellation(self):
+        class ClosingIterator:
+            def __init__(self):
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return Image.new("RGB", (8, 8), "white")
+
+            def close(self):
+                self.closed = True
+
+        iterator = ClosingIterator()
+        options = self.options(
+            Path("source.mp4"),
+            Path("output.bin"),
+            workers=1,
+        )
+        info = media2ovid.SourceInfo("video", 1, 0.5, 2.0, (8, 8))
+        with mock.patch.object(media2ovid, "iter_source_images", return_value=iterator):
+            with self.assertRaises(media2ovid.ConversionCancelled):
+                list(media2ovid._processed_frames(options, info, lambda: True))
+        self.assertTrue(iterator.closed)
+
     def test_existing_output_requires_force(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
