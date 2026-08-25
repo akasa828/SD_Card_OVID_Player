@@ -59,7 +59,8 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to generate converter icon." }
     --company-name "riochihao" `
     --copyright "Copyright (c) 2026 riochihao" `
     --add-data "${assetsPath}:assets" `
-    --hidden-import imageio_ffmpeg
+    --hidden-import imageio_ffmpeg `
+    --pyinstaller-build-args=--exclude-module=flet_web
 if ($LASTEXITCODE -ne 0) { throw "Flet packaging failed." }
 
 $appRoot = Join-Path $portableRoot "OVID Converter"

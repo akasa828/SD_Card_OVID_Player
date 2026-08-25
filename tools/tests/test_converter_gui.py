@@ -23,6 +23,14 @@ import ovid_converter_gui as converter_gui  # noqa: E402
 
 
 class ConverterGuiTests(unittest.TestCase):
+    def test_lightweight_package_excludes_unused_flet_web_backend(self) -> None:
+        source = PACKAGE_SOURCE.read_text(encoding="utf-8")
+        self.assertIn(
+            "--pyinstaller-build-args=--exclude-module=flet_web",
+            source,
+        )
+        self.assertIn("--hidden-import imageio_ffmpeg", source)
+
     def test_timestamps_use_consistent_centisecond_format(self) -> None:
         self.assertEqual("00:00.00", converter_gui.format_timestamp(0))
         self.assertEqual("01:02.35", converter_gui.format_timestamp(62.345))
