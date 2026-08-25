@@ -1268,10 +1268,22 @@ class ConverterApp:
                 self.player_slider,
                 ft.Row(
                     [
-                        ft.IconButton(icon=ft.Icons.SKIP_PREVIOUS, on_click=self._player_first),
-                        ft.IconButton(icon=ft.Icons.CHEVRON_LEFT, on_click=self._player_previous),
+                        ft.IconButton(
+                            icon=ft.Icons.SKIP_PREVIOUS,
+                            tooltip="回到首帧 (Home)",
+                            on_click=self._player_first,
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.CHEVRON_LEFT,
+                            tooltip="上一帧 (←)",
+                            on_click=self._player_previous,
+                        ),
                         self.player_play_button,
-                        ft.IconButton(icon=ft.Icons.CHEVRON_RIGHT, on_click=self._player_next),
+                        ft.IconButton(
+                            icon=ft.Icons.CHEVRON_RIGHT,
+                            tooltip="下一帧 (→)",
+                            on_click=self._player_next,
+                        ),
                         self.player_invert,
                         self.player_scale,
                     ],
@@ -3040,6 +3052,15 @@ class ConverterApp:
             and not self.convert_button.disabled
         ):
             await self._start_conversion(None)
+        elif self.page_index == 1 and not event.ctrl:
+            if key in {" ", "space", "spacebar"}:
+                await self._toggle_player(None)
+            elif key in {"arrow left", "left"}:
+                await self._player_previous(None)
+            elif key in {"arrow right", "right"}:
+                await self._player_next(None)
+            elif key == "home":
+                await self._player_first(None)
 
     async def _on_window_event(self, event: ft.WindowEvent) -> None:
         event_type = getattr(event, "type", None)

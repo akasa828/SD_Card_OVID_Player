@@ -549,6 +549,29 @@ class ConverterGuiTests(unittest.TestCase):
         app._choose_file.assert_awaited_once_with(None)
         app._start_conversion.assert_awaited_once_with(None)
 
+    def test_player_keyboard_shortcuts_control_playback_and_frames(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.exit_dialog_open = False
+        app.page_index = 1
+        app.convert_button = SimpleNamespace(disabled=True)
+        app._toggle_player = mock.AsyncMock()
+        app._player_previous = mock.AsyncMock()
+        app._player_next = mock.AsyncMock()
+        app._player_first = mock.AsyncMock()
+
+        async def exercise() -> None:
+            for key in ("Space", "Arrow Left", "Arrow Right", "Home"):
+                await app._on_keyboard_event(
+                    SimpleNamespace(key=key, ctrl=False, alt=False, meta=False)
+                )
+
+        asyncio.run(exercise())
+
+        app._toggle_player.assert_awaited_once_with(None)
+        app._player_previous.assert_awaited_once_with(None)
+        app._player_next.assert_awaited_once_with(None)
+        app._player_first.assert_awaited_once_with(None)
+
     def test_window_close_requires_confirmation_while_busy(self) -> None:
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.busy = True
