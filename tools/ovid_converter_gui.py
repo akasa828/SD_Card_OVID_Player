@@ -186,6 +186,18 @@ def smooth_progress_value(current: float, target: float, elapsed: float) -> floa
     return target if target - value < 0.0005 else min(target, value)
 
 
+def responsive_preview_heights(window_height: float | int | None) -> tuple[int, int]:
+    """Keep both editors useful on small screens without wasting tall windows."""
+    try:
+        height = float(window_height or 760)
+    except (TypeError, ValueError):
+        height = 760
+    height = max(480.0, height)
+    comparison = round(min(300.0, max(160.0, height * 0.30)))
+    player = round(min(520.0, max(260.0, height * 0.52)))
+    return comparison, player
+
+
 def normalize_theme_mode(value: object) -> str:
     theme = str(value).lower()
     return theme if theme in VALID_THEME_MODES else "system"
@@ -587,6 +599,7 @@ class ConverterApp:
         self.exit_dialog_open = False
         self.exit_after_conversion_stop = False
         self.page_index = 0
+        self.compact_layout: bool | None = None
         self.file_picker = ft.FilePicker()
         self.clipboard = ft.Clipboard()
         self.page.services.extend([self.file_picker, self.clipboard])
@@ -3107,10 +3120,26 @@ class ConverterApp:
 
     def _on_resize(self, _=None) -> None:
         width = self.page.width or self.page.window.width or 1120
+        height = self.page.height or self.page.window.height or 760
         compact = width < 800
-        self.navigation_rail.visible = not compact
-        self.page.navigation_bar = self.navigation_bar if compact else None
-        self.page.update()
+        comparison_height, player_height = responsive_preview_heights(height)
+        navigation_changed = compact != self.compact_layout
+        resized_controls: list[ft.Control] = []
+        if navigation_changed:
+            self.compact_layout = compact
+            self.navigation_rail.visible = not compact
+            self.page.navigation_bar = self.navigation_bar if compact else None
+        for control in (self.original_preview_image, self.preview_image):
+            if control.height != comparison_height:
+                control.height = comparison_height
+                resized_controls.append(control)
+        if self.player_image.height != player_height:
+            self.player_image.height = player_height
+            resized_controls.append(self.player_image)
+        if navigation_changed:
+            self.page.update()
+        elif resized_controls:
+            self.page.update(*resized_controls)
 
     def _show_error(self, title: str, error: Exception) -> None:
         self.page.show_dialog(

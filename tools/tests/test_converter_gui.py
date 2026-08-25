@@ -37,6 +37,48 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertEqual("01:01:01.25", converter_gui.format_timestamp(3661.25))
         self.assertEqual("--:--.--", converter_gui.format_timestamp(None))
 
+    def test_preview_heights_adapt_to_the_window(self) -> None:
+        self.assertEqual((160, 260), converter_gui.responsive_preview_heights(480))
+        self.assertEqual((228, 395), converter_gui.responsive_preview_heights(760))
+        self.assertEqual((300, 520), converter_gui.responsive_preview_heights(1200))
+
+    def test_repeated_resize_updates_only_changed_preview_controls(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.compact_layout = None
+        app.navigation_rail = converter_gui.ft.NavigationRail(destinations=[])
+        app.navigation_bar = converter_gui.ft.NavigationBar(destinations=[])
+        app.original_preview_image = converter_gui.ft.Image(src=b"", height=260)
+        app.preview_image = converter_gui.ft.Image(src=b"", height=260)
+        app.player_image = converter_gui.ft.Image(src=b"", height=360)
+        app.page = SimpleNamespace(
+            width=1000,
+            height=760,
+            window=SimpleNamespace(width=1000, height=760),
+            navigation_bar=None,
+            update=mock.Mock(),
+        )
+
+        app._on_resize()
+        app.page.update.assert_called_once_with()
+        self.assertEqual(228, app.preview_image.height)
+        self.assertEqual(395, app.player_image.height)
+
+        app.page.update.reset_mock()
+        app.page.height = 700
+        app._on_resize()
+        self.assertEqual(
+            (
+                app.original_preview_image,
+                app.preview_image,
+                app.player_image,
+            ),
+            app.page.update.call_args.args,
+        )
+
+        app.page.update.reset_mock()
+        app._on_resize()
+        app.page.update.assert_not_called()
+
     def test_batch_result_distinguishes_successes_and_failures(self) -> None:
         self.assertEqual("本轮完成：3/3 个任务", converter_gui.batch_result_text(3, 3))
         self.assertEqual("本轮结束：2 成功 · 1 失败", converter_gui.batch_result_text(2, 3))
