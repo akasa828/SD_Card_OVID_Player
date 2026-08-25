@@ -93,6 +93,18 @@ class OvidPlaybackSession:
             self.last_valid = frame.data
         data = self.last_valid if held_previous else frame.data
         assert data is not None
+        return self._render_frame(index, data, frame.crc_valid, held_previous, invert, scale)
+
+    def _render_frame(
+        self,
+        index: int,
+        data: bytes,
+        crc_valid: bool,
+        held_previous: bool,
+        invert: bool,
+        scale: int,
+    ) -> SimulatedFrame:
+        assert self.header is not None
         self.index = index
         return SimulatedFrame(
             index,
@@ -103,7 +115,7 @@ class OvidPlaybackSession:
                 invert=invert,
                 scale=scale,
             ),
-            frame.crc_valid,
+            crc_valid,
             held_previous,
         )
 
@@ -115,25 +127,38 @@ class OvidPlaybackSession:
     def previous(self, *, invert: bool = False, scale: int = 4) -> SimulatedFrame:
         if self.header is None:
             raise ValueError("请先打开 OVID 文件")
-        target = max(0, self.index - 1)
-        # Rebuild the valid-frame state when seeking backwards so corrupt
-        # frames match firmware behavior instead of holding a future frame.
-        self.last_valid = bytes(self.header.frame_bytes)
-        result = None
-        for frame_index in range(target + 1):
-            result = self.read(frame_index, invert=invert, scale=scale)
-        assert result is not None
-        return result
+        return self.seek(max(0, self.index - 1), invert=invert, scale=scale)
 
     def seek(self, index: int, *, invert: bool = False, scale: int = 4) -> SimulatedFrame:
-        if self.header is None:
+        if self.header is None or self.reader is None:
             raise ValueError("请先打开 OVID 文件")
         target = min(self.header.frame_count - 1, max(0, index))
         if target == self.index + 1:
             return self.read(target, invert=invert, scale=scale)
-        self.last_valid = bytes(self.header.frame_bytes)
-        result = None
-        for frame_index in range(target + 1):
-            result = self.read(frame_index, invert=invert, scale=scale)
-        assert result is not None
-        return result
+        frame = self.reader.read_frame(target)
+        if frame.crc_valid:
+            self.last_valid = frame.data
+            return self._render_frame(
+                target,
+                frame.data,
+                True,
+                False,
+                invert,
+                scale,
+            )
+
+        previous = bytes(self.header.frame_bytes)
+        for frame_index in range(target - 1, -1, -1):
+            candidate = self.reader.read_frame(frame_index)
+            if candidate.crc_valid:
+                previous = candidate.data
+                break
+        self.last_valid = previous
+        return self._render_frame(
+            target,
+            previous,
+            False,
+            True,
+            invert,
+            scale,
+        )

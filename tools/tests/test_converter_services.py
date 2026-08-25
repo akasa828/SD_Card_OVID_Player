@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -238,6 +239,52 @@ class ConverterServicesTests(unittest.TestCase):
             self.assertTrue(second.held_previous)
             self.assertEqual(first.png, second.png)
             session.close()
+
+    def test_player_seeks_directly_to_a_valid_frame(self):
+        session = OvidPlaybackSession()
+        session.header = SimpleNamespace(
+            frame_count=100,
+            frame_bytes=8,
+            width=8,
+            height=8,
+        )
+        session.reader = mock.Mock()
+        session.reader.read_frame.return_value = ovid_codec.OvidFrame(
+            99,
+            bytes([0xFF] * 8),
+            True,
+        )
+
+        with mock.patch("ovid_player.frame_png", return_value=b"frame"):
+            result = session.seek(99)
+
+        self.assertEqual(99, result.index)
+        session.reader.read_frame.assert_called_once_with(99)
+
+    def test_player_seeks_back_only_when_the_target_crc_is_bad(self):
+        session = OvidPlaybackSession()
+        session.header = SimpleNamespace(
+            frame_count=10,
+            frame_bytes=8,
+            width=8,
+            height=8,
+        )
+        session.reader = mock.Mock()
+        session.reader.read_frame.side_effect = [
+            ovid_codec.OvidFrame(5, bytes(8), False),
+            ovid_codec.OvidFrame(4, bytes(8), False),
+            ovid_codec.OvidFrame(3, bytes([0x55] * 8), True),
+        ]
+
+        with mock.patch("ovid_player.frame_png", return_value=b"held"):
+            result = session.seek(5)
+
+        self.assertFalse(result.crc_valid)
+        self.assertTrue(result.held_previous)
+        self.assertEqual(
+            [mock.call(5), mock.call(4), mock.call(3)],
+            session.reader.read_frame.call_args_list,
+        )
 
     def test_page_major_decoder_handles_odd_height(self):
         image = page_major_to_image(bytes([0x01, 0x00, 0x00, 0x01]), 2, 9)
