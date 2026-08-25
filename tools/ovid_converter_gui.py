@@ -32,6 +32,7 @@ from converter_services import (
     ConversionQueue,
     PresetStore,
     QueueJob,
+    QueueSessionStore,
     check_compatibility,
     suggested_threshold,
 )
@@ -558,9 +559,12 @@ class ConverterApp:
         self.page = page
         self.settings = load_settings()
         self.preset_store = PresetStore()
-        self.queue = ConversionQueue()
+        self.session_store = QueueSessionStore()
+        restored_jobs, restored_active_task = self.session_store.load()
+        self.queue = ConversionQueue(restored_jobs)
         self.task_rows: dict[str, TaskRowView] = {}
-        self.active_task_id: str | None = None
+        self.active_task_id: str | None = restored_active_task
+        self.session_save_task: asyncio.Task | None = None
         self.current_batch_ids: tuple[str, ...] = ()
         self.stop_batch_requested = False
         self.loading_task_controls = False
@@ -608,6 +612,8 @@ class ConverterApp:
         self._configure_page()
         self._refresh_queue_view()
         self._show_page(0)
+        if self.active_task_id is not None:
+            asyncio.create_task(self._activate_task(self.active_task_id))
 
     def _configure_page(self) -> None:
         self.page.title = f"{DISPLAY_NAME} {VERSION}"
@@ -1781,6 +1787,28 @@ class ConverterApp:
         else:
             controls_to_update[0:0] = changed_rows
         self.page.update(*controls_to_update)
+        self._schedule_session_save()
+
+    def _schedule_session_save(self) -> None:
+        if not hasattr(self, "session_store"):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = getattr(self, "session_save_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        self.session_save_task = loop.create_task(self._save_session_after_delay())
+
+    async def _save_session_after_delay(self) -> None:
+        try:
+            await asyncio.sleep(0.5)
+            self.session_store.save(self.queue.snapshot(), self.active_task_id)
+        except asyncio.CancelledError:
+            raise
+        except OSError as exc:
+            self.logger.event("session", f"failed to save session: {exc}", level=30)
 
     def _set_task_selected(self, job_id: str, selected: bool) -> None:
         self.queue.set_selected(job_id, selected)
@@ -3113,11 +3141,15 @@ class ConverterApp:
             self.preview_time_task,
             self.player_time_task,
             self.progress_render_task,
+            self.session_save_task,
         ):
             if task is not None and not task.done():
                 task.cancel()
         self.preview.close()
         self.player.close()
+        if hasattr(self, "session_store"):
+            with contextlib.suppress(OSError):
+                self.session_store.save(self.queue.snapshot(), self.active_task_id)
         self.logger.close()
         await self.page.window.destroy()
 

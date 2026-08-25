@@ -387,8 +387,8 @@ class QueueJob:
 class ConversionQueue:
     VALID_STATES = frozenset({"queued", "running", "completed", "failed", "cancelled"})
 
-    def __init__(self):
-        self._jobs: list[QueueJob] = []
+    def __init__(self, jobs: Iterable[QueueJob] = ()):
+        self._jobs: list[QueueJob] = list(jobs)
         self._lock = threading.RLock()
 
     def snapshot(self) -> tuple[QueueJob, ...]:
@@ -535,3 +535,131 @@ class ConversionQueue:
     def clear_completed(self) -> None:
         with self._lock:
             self._jobs[:] = [job for job in self._jobs if job.state not in {"completed", "cancelled"}]
+
+
+class QueueSessionStore:
+    VERSION = 1
+
+    def __init__(self, path: Path | None = None):
+        self.path = path or application_data_dir() / "session.json"
+
+    @staticmethod
+    def _options_value(options: ConversionOptions) -> dict[str, object]:
+        value = asdict(options)
+        value["source"] = str(options.source)
+        value["output"] = str(options.output)
+        return value
+
+    @staticmethod
+    def _summary_value(summary: OvidSummary | None) -> dict[str, object] | None:
+        if summary is None:
+            return None
+        value = asdict(summary)
+        value["path"] = str(summary.path)
+        return value
+
+    def save(self, jobs: Iterable[QueueJob], active_task_id: str | None) -> None:
+        values = []
+        for job in jobs:
+            interrupted = job.state == "running" or job.frozen
+            state = "queued" if interrupted else job.state
+            values.append(
+                {
+                    "id": job.id,
+                    "options": self._options_value(job.options),
+                    "target_profile": job.target_profile,
+                    "state": state,
+                    "summary": self._summary_value(job.summary),
+                    "error": job.error,
+                    "selected": True if interrupted else bool(job.selected),
+                    "created_at": job.created_at,
+                }
+            )
+        payload = {
+            "version": self.VERSION,
+            "active_task_id": active_task_id,
+            "jobs": values,
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temporary, self.path)
+
+    @staticmethod
+    def _load_summary(value: object) -> OvidSummary | None:
+        if not isinstance(value, dict):
+            return None
+        summary_value = dict(value)
+        summary_value["path"] = Path(str(summary_value.get("path", "")))
+        try:
+            summary = OvidSummary(**summary_value)
+        except (TypeError, ValueError):
+            return None
+        return summary if summary.path.is_file() else None
+
+    def load(self) -> tuple[tuple[QueueJob, ...], str | None]:
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return (), None
+        if not isinstance(payload, dict) or payload.get("version") != self.VERSION:
+            return (), None
+        raw_jobs = payload.get("jobs")
+        if not isinstance(raw_jobs, list):
+            return (), None
+        jobs: list[QueueJob] = []
+        seen_ids: set[str] = set()
+        for raw in raw_jobs[:500]:
+            try:
+                if not isinstance(raw, dict) or not isinstance(raw.get("options"), dict):
+                    continue
+                options_value = dict(raw["options"])
+                source_value = str(options_value.get("source", "")).strip()
+                output_value = str(options_value.get("output", "")).strip()
+                if not source_value or not output_value:
+                    continue
+                options_value["source"] = Path(source_value)
+                options_value["output"] = Path(output_value)
+                if options_value["output"].suffix.casefold() != ".bin":
+                    continue
+                options = ConversionOptions(**options_value)
+                options.validate()
+                job_id = str(raw.get("id") or uuid.uuid4().hex)
+                if job_id in seen_ids:
+                    continue
+                seen_ids.add(job_id)
+                state = str(raw.get("state", "queued"))
+                if state not in ConversionQueue.VALID_STATES or state == "running":
+                    state = "queued"
+                summary = self._load_summary(raw.get("summary"))
+                if state == "completed" and summary is None:
+                    state = "queued"
+                target_profile = str(raw.get("target_profile", "stm32f103-128x64"))
+                if target_profile not in TARGET_PROFILES:
+                    target_profile = "stm32f103-128x64"
+                jobs.append(
+                    QueueJob(
+                        options=options,
+                        target_profile=target_profile,
+                        id=job_id,
+                        state=state,
+                        summary=summary,
+                        error=str(raw.get("error", "")) if state == "failed" else "",
+                        selected=(
+                            False
+                            if state == "completed"
+                            else bool(raw.get("selected", True))
+                        ),
+                        frozen=False,
+                        created_at=float(raw.get("created_at", time.time())),
+                    )
+                )
+            except (OSError, TypeError, ValueError):
+                continue
+        active_task_id = str(payload.get("active_task_id") or "") or None
+        if active_task_id not in {job.id for job in jobs}:
+            active_task_id = jobs[0].id if jobs else None
+        return tuple(jobs), active_task_id

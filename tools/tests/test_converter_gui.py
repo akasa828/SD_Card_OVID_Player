@@ -460,6 +460,8 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertIn('"应用到已勾选项"', source)
         self.assertNotIn("def _build_queue_page", source)
         self.assertIn("allow_multiple=True", source)
+        self.assertIn("self.session_store = QueueSessionStore()", source)
+        self.assertIn("self.session_store.save(self.queue.snapshot()", source)
 
     def test_conversion_page_keeps_primary_action_visible(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")

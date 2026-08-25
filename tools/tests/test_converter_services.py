@@ -76,6 +76,77 @@ class ConverterServicesTests(unittest.TestCase):
 
             self.assertEqual(["Good"], [preset.name for preset in presets])
 
+    def test_queue_session_round_trip_restores_safe_task_states(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = services.ConversionQueue()
+            unchecked = queue.add(self.options(root, output=root / "unchecked.BIN"))
+            queue.set_selected(unchecked.id, False)
+            interrupted = queue.add(self.options(root, output=root / "running.BIN"))
+            queue.update(interrupted.id, state="running")
+            interrupted.frozen = True
+            completed = queue.add(self.options(root, output=root / "done.BIN"))
+            completed.options.output.write_bytes(b"OVID")
+            queue.complete(
+                completed.id,
+                ovid_codec.OvidSummary(
+                    completed.options.output,
+                    8,
+                    8,
+                    1,
+                    15,
+                    8,
+                    28,
+                    2,
+                ),
+            )
+            store = services.QueueSessionStore(root / "session.json")
+
+            store.save(queue.snapshot(), interrupted.id)
+            jobs, active_id = store.load()
+
+            restored = {job.id: job for job in jobs}
+            self.assertFalse(restored[unchecked.id].selected)
+            self.assertEqual("queued", restored[interrupted.id].state)
+            self.assertTrue(restored[interrupted.id].selected)
+            self.assertFalse(restored[interrupted.id].frozen)
+            self.assertEqual("completed", restored[completed.id].state)
+            self.assertEqual(completed.options.output, restored[completed.id].summary.path)
+            self.assertFalse(restored[completed.id].selected)
+            self.assertEqual(interrupted.id, active_id)
+            self.assertFalse((root / "session.tmp").exists())
+
+    def test_queue_session_skips_missing_and_corrupted_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            Image.new("L", (8, 8), 128).save(source)
+            path = root / "session.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "active_task_id": "missing",
+                        "jobs": [
+                            {"id": "invalid", "options": {"source": str(source)}},
+                            {
+                                "id": "gone",
+                                "options": {
+                                    "source": str(root / "missing.mp4"),
+                                    "output": str(root / "missing.BIN"),
+                                },
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            jobs, active_id = services.QueueSessionStore(path).load()
+
+            self.assertEqual((), jobs)
+            self.assertIsNone(active_id)
+
     def test_user_preset_validation_rejects_invalid_values(self):
         with tempfile.TemporaryDirectory() as directory:
             store = services.PresetStore(Path(directory) / "presets.json")
