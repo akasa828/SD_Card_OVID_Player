@@ -331,6 +331,19 @@ class AppSettings:
     target_profile: str = "stm32f103-128x64"
 
 
+@dataclass
+class TaskRowView:
+    card: ft.Card
+    container: ft.Container
+    checkbox: ft.Checkbox
+    name: ft.Text
+    details: ft.Text
+    state: ft.Text
+    progress: ft.ProgressBar
+    actions: ft.Row
+    signature: tuple[object, ...] = ()
+
+
 def settings_file() -> Path:
     root = os.getenv("FLET_APP_STORAGE_DATA")
     if not root:
@@ -534,6 +547,7 @@ class ConverterApp:
         self.settings = load_settings()
         self.preset_store = PresetStore()
         self.queue = ConversionQueue()
+        self.task_rows: dict[str, TaskRowView] = {}
         self.active_task_id: str | None = None
         self.current_batch_ids: tuple[str, ...] = ()
         self.stop_batch_requested = False
@@ -1498,106 +1512,158 @@ class ConverterApp:
             detail += f" · {job.error}"
         return detail
 
+    def _task_row_actions(self, job: QueueJob) -> list[ft.Control]:
+        actions: list[ft.Control] = [
+            ft.IconButton(
+                icon=ft.Icons.VISIBILITY_OUTLINED,
+                tooltip="编辑并预览源素材",
+                on_click=lambda _, job_id=job.id: asyncio.create_task(
+                    self._activate_task(job_id, scroll_target="preview-card")
+                ),
+            )
+        ]
+        if job.state == "completed" and job.summary is not None:
+            actions.append(
+                ft.IconButton(
+                    icon=ft.Icons.PLAY_CIRCLE_OUTLINE,
+                    tooltip="播放生成的 OVID",
+                    on_click=lambda _, job_id=job.id: self._play_completed_job(job_id),
+                )
+            )
+        if job.state in {"failed", "cancelled"}:
+            actions.append(
+                ft.IconButton(
+                    icon=ft.Icons.REFRESH,
+                    tooltip="重试",
+                    on_click=lambda _, job_id=job.id: self._retry_queue_job(job_id),
+                )
+            )
+        if job.state != "running" and not job.frozen:
+            actions.append(
+                ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE,
+                    tooltip="移除",
+                    on_click=lambda _, job_id=job.id: self._remove_queue_job(job_id),
+                )
+            )
+        return actions
+
+    def _create_task_row(self, job: QueueJob) -> TaskRowView:
+        checkbox = ft.Checkbox(
+            tooltip="勾选后由“转换所选”处理",
+            on_change=lambda event, job_id=job.id: self._set_task_selected(
+                job_id, bool(event.control.value)
+            ),
+        )
+        name = ft.Text(
+            weight=ft.FontWeight.W_600,
+            max_lines=1,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
+        details = ft.Text(size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        state = ft.Text(
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
+        progress = ft.ProgressBar(value=0, visible=False)
+        clickable = ft.Container(
+            expand=True,
+            padding=ft.Padding.symmetric(vertical=4),
+            on_click=lambda _, job_id=job.id: asyncio.create_task(
+                self._activate_task(job_id, scroll_target="parameter-card")
+            ),
+            content=ft.Column(
+                [name, details, state, progress],
+                spacing=3,
+            ),
+        )
+        actions = ft.Row(spacing=0)
+        container = ft.Container(
+            padding=12,
+            border_radius=12,
+            content=ft.Row(
+                [checkbox, clickable, actions],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+        row = TaskRowView(
+            card=ft.Card(content=container),
+            container=container,
+            checkbox=checkbox,
+            name=name,
+            details=details,
+            state=state,
+            progress=progress,
+            actions=actions,
+        )
+        self._update_task_row(row, job)
+        return row
+
+    def _update_task_row(self, row: TaskRowView, job: QueueJob) -> bool:
+        details = (
+            f"{job.options.width}×{job.options.height} · {job.options.fps} FPS · "
+            f"{self._task_time_range(job.options)}"
+        )
+        state_text = self._queue_state_text(job)
+        progress = job.progress.ratio if job.progress is not None else 0
+        action_signature = (
+            job.state == "completed" and job.summary is not None,
+            job.state in {"failed", "cancelled"},
+            job.state != "running" and not job.frozen,
+        )
+        signature = (
+            job.options.source.name,
+            str(job.options.source),
+            details,
+            state_text,
+            bool(job.selected),
+            bool(job.frozen or job.state == "running"),
+            progress,
+            job.state == "running",
+            job.id == self.active_task_id,
+            action_signature,
+        )
+        if signature == row.signature:
+            return False
+        if not row.signature or action_signature != row.signature[-1]:
+            row.actions.controls = self._task_row_actions(job)
+        row.checkbox.value = job.selected
+        row.checkbox.disabled = job.frozen or job.state == "running"
+        row.name.value = job.options.source.name
+        row.name.tooltip = str(job.options.source)
+        row.details.value = details
+        row.state.value = state_text
+        row.state.max_lines = 2 if job.error else 1
+        row.state.tooltip = state_text if job.error else None
+        row.progress.value = progress
+        row.progress.visible = job.state == "running"
+        row.container.border = (
+            ft.Border.all(2, ft.Colors.PRIMARY)
+            if job.id == self.active_task_id
+            else None
+        )
+        row.signature = signature
+        return True
+
     def _refresh_queue_view(self) -> None:
         jobs = self.queue.snapshot()
-        controls: list[ft.Control] = []
+        if not hasattr(self, "task_rows"):
+            self.task_rows = {}
+        job_ids = {job.id for job in jobs}
+        structure_changed = job_ids != set(self.task_rows)
+        changed_rows: list[ft.Control] = []
         for job in jobs:
-            actions: list[ft.Control] = [
-                ft.IconButton(
-                    icon=ft.Icons.VISIBILITY_OUTLINED,
-                    tooltip="编辑并预览源素材",
-                    on_click=lambda _, job_id=job.id: asyncio.create_task(
-                        self._activate_task(job_id, scroll_target="preview-card")
-                    ),
-                )
-            ]
-            if job.state == "completed" and job.summary is not None:
-                actions.append(
-                    ft.IconButton(
-                        icon=ft.Icons.PLAY_CIRCLE_OUTLINE,
-                        tooltip="播放生成的 OVID",
-                        on_click=lambda _, job_id=job.id: self._play_completed_job(job_id),
-                    )
-                )
-            if job.state in {"failed", "cancelled"}:
-                actions.append(
-                    ft.IconButton(
-                        icon=ft.Icons.REFRESH,
-                        tooltip="重试",
-                        on_click=lambda _, job_id=job.id: self._retry_queue_job(job_id),
-                    )
-                )
-            if job.state != "running" and not job.frozen:
-                actions.append(
-                    ft.IconButton(
-                        icon=ft.Icons.DELETE_OUTLINE,
-                        tooltip="移除",
-                        on_click=lambda _, job_id=job.id: self._remove_queue_job(job_id),
-                    )
-                )
-            progress = job.progress.ratio if job.progress is not None else 0
-            details = (
-                f"{job.options.width}×{job.options.height} · {job.options.fps} FPS · "
-                f"{self._task_time_range(job.options)}"
-            )
-            state_text = self._queue_state_text(job)
-            clickable = ft.Container(
-                expand=True,
-                padding=ft.Padding.symmetric(vertical=4),
-                on_click=lambda _, job_id=job.id: asyncio.create_task(
-                    self._activate_task(job_id, scroll_target="parameter-card")
-                ),
-                content=ft.Column(
-                    [
-                        ft.Text(
-                            job.options.source.name,
-                            weight=ft.FontWeight.W_600,
-                            max_lines=1,
-                            overflow=ft.TextOverflow.ELLIPSIS,
-                            tooltip=str(job.options.source),
-                        ),
-                        ft.Text(details, size=12, color=ft.Colors.ON_SURFACE_VARIANT),
-                        ft.Text(
-                            state_text,
-                            color=ft.Colors.ON_SURFACE_VARIANT,
-                            max_lines=2 if job.error else 1,
-                            overflow=ft.TextOverflow.ELLIPSIS,
-                            tooltip=state_text if job.error else None,
-                        ),
-                        ft.ProgressBar(value=progress, visible=job.state == "running"),
-                    ],
-                    spacing=3,
-                ),
-            )
-            controls.append(
-                ft.Card(
-                    content=ft.Container(
-                        padding=12,
-                        border=(
-                            ft.Border.all(2, ft.Colors.PRIMARY)
-                            if job.id == self.active_task_id
-                            else None
-                        ),
-                        border_radius=12,
-                        content=ft.Row(
-                            [
-                                ft.Checkbox(
-                                    value=job.selected,
-                                    disabled=job.frozen or job.state == "running",
-                                    tooltip="勾选后由“转换所选”处理",
-                                    on_change=lambda event, job_id=job.id: self._set_task_selected(
-                                        job_id, bool(event.control.value)
-                                    ),
-                                ),
-                                clickable,
-                                *actions,
-                            ],
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        ),
-                    )
-                )
-            )
-        self.queue_list.controls = controls
+            row = self.task_rows.get(job.id)
+            if row is None:
+                row = self._create_task_row(job)
+                self.task_rows[job.id] = row
+                structure_changed = True
+            elif self._update_task_row(row, job):
+                changed_rows.append(row.container)
+        for stale_id in set(self.task_rows) - job_ids:
+            del self.task_rows[stale_id]
+        if structure_changed:
+            self.queue_list.controls = [self.task_rows[job.id].card for job in jobs]
         if not jobs:
             self.queue_status.value = "尚未添加转换任务"
         else:
@@ -1643,8 +1709,7 @@ class ConverterApp:
             self.task_action_status.value = "请选择需要转换的任务"
         else:
             self.task_action_status.value = "添加素材后即可开始转换"
-        self.page.update(
-            self.queue_list,
+        controls_to_update: list[ft.Control] = [
             self.queue_status,
             self.queue_empty_state,
             self.convert_button,
@@ -1653,7 +1718,12 @@ class ConverterApp:
             self.clear_completed_button,
             self.apply_selected_button,
             self.task_action_status,
-        )
+        ]
+        if structure_changed:
+            controls_to_update.insert(0, self.queue_list)
+        else:
+            controls_to_update[0:0] = changed_rows
+        self.page.update(*controls_to_update)
 
     def _set_task_selected(self, job_id: str, selected: bool) -> None:
         self.queue.set_selected(job_id, selected)

@@ -429,8 +429,8 @@ class ConverterGuiTests(unittest.TestCase):
 
     def test_task_rows_clip_long_names_and_errors(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")
-        self.assertIn("tooltip=str(job.options.source)", source)
-        self.assertIn("max_lines=2 if job.error else 1", source)
+        self.assertIn("row.name.tooltip = str(job.options.source)", source)
+        self.assertIn("row.state.max_lines = 2 if job.error else 1", source)
         self.assertGreaterEqual(source.count("overflow=ft.TextOverflow.ELLIPSIS"), 2)
 
     def test_completed_task_can_open_its_generated_ovid(self) -> None:
@@ -527,6 +527,42 @@ class ConverterGuiTests(unittest.TestCase):
         app._refresh_queue_view()
         self.assertFalse(app.queue_empty_state.visible)
         self.assertFalse(app.convert_button.disabled)
+
+    def test_queue_refresh_reuses_existing_task_rows(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.queue = converter_gui.ConversionQueue()
+        app.task_rows = {}
+        app.active_task_id = None
+        app.busy = False
+        app.queue_list = converter_gui.ft.Column()
+        app.queue_status = converter_gui.ft.Text()
+        app.queue_empty_state = converter_gui.ft.Container()
+        app.convert_button = converter_gui.ft.FilledButton()
+        app.select_all_button = converter_gui.ft.TextButton()
+        app.select_none_button = converter_gui.ft.TextButton()
+        app.clear_completed_button = converter_gui.ft.TextButton()
+        app.apply_selected_button = converter_gui.ft.OutlinedButton()
+        app.task_action_status = converter_gui.ft.Text()
+        app.page = SimpleNamespace(update=mock.Mock())
+        job = app.queue.add(
+            converter_gui.ConversionOptions(Path("clip.mp4"), Path("clip.bin"))
+        )
+
+        app._refresh_queue_view()
+        original_card = app.task_rows[job.id].card
+        app.page.update.reset_mock()
+        app.queue.update(
+            job.id,
+            state="running",
+            progress=converter_gui.ConversionProgress(12, 100, 4096),
+        )
+
+        app._refresh_queue_view()
+
+        self.assertIs(original_card, app.task_rows[job.id].card)
+        updated_controls = app.page.update.call_args.args
+        self.assertNotIn(app.queue_list, updated_controls)
+        self.assertIn(app.task_rows[job.id].container, updated_controls)
 
     def test_task_controls_use_independent_option_snapshots(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")
