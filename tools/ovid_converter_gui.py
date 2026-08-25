@@ -588,7 +588,8 @@ class ConverterApp:
         self.exit_after_conversion_stop = False
         self.page_index = 0
         self.file_picker = ft.FilePicker()
-        self.page.services.append(self.file_picker)
+        self.clipboard = ft.Clipboard()
+        self.page.services.extend([self.file_picker, self.clipboard])
 
         self._build_controls()
         self._configure_page()
@@ -1530,6 +1531,33 @@ class ConverterApp:
                     on_click=lambda _, job_id=job.id: self._play_completed_job(job_id),
                 )
             )
+            actions.append(
+                ft.PopupMenuButton(
+                    icon=ft.Icons.MORE_VERT,
+                    tooltip="更多输出操作",
+                    items=[
+                        ft.PopupMenuItem(
+                            content="打开输出文件夹",
+                            icon=ft.Icons.FOLDER_OPEN,
+                            on_click=lambda _, job_id=job.id: self._open_completed_job_folder(
+                                job_id
+                            ),
+                        ),
+                        ft.PopupMenuItem(
+                            content="复制输出路径",
+                            icon=ft.Icons.CONTENT_COPY,
+                            on_click=lambda _, job_id=job.id: asyncio.create_task(
+                                self._copy_completed_job_path(job_id)
+                            ),
+                        ),
+                        ft.PopupMenuItem(
+                            content="移除任务",
+                            icon=ft.Icons.DELETE_OUTLINE,
+                            on_click=lambda _, job_id=job.id: self._remove_queue_job(job_id),
+                        ),
+                    ],
+                )
+            )
         if job.state in {"failed", "cancelled"}:
             actions.append(
                 ft.IconButton(
@@ -1538,7 +1566,11 @@ class ConverterApp:
                     on_click=lambda _, job_id=job.id: self._retry_queue_job(job_id),
                 )
             )
-        if job.state != "running" and not job.frozen:
+        if (
+            job.state != "running"
+            and not job.frozen
+            and not (job.state == "completed" and job.summary is not None)
+        ):
             actions.append(
                 ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE,
@@ -1752,6 +1784,29 @@ class ConverterApp:
             self._open_player_path(job.summary.path, show_page=True)
         except Exception as exc:
             self._show_error("无法播放转换结果", exc)
+
+    def _completed_job_path(self, job_id: str) -> Path:
+        job = self.queue.find(job_id)
+        if job.summary is None:
+            raise ValueError("当前任务还没有可用的输出文件")
+        return job.summary.path.resolve()
+
+    def _open_completed_job_folder(self, job_id: str) -> None:
+        try:
+            output = self._completed_job_path(job_id)
+            if not output.parent.is_dir():
+                raise FileNotFoundError(f"输出目录不存在：{output.parent}")
+            os.startfile(output.parent)
+        except Exception as exc:
+            self._show_error("无法打开输出文件夹", exc)
+
+    async def _copy_completed_job_path(self, job_id: str) -> None:
+        try:
+            output = self._completed_job_path(job_id)
+            await self.clipboard.set(str(output))
+            self._show_notice("已复制输出文件路径")
+        except Exception as exc:
+            self._show_error("无法复制输出路径", exc)
 
     def _remove_queue_job(self, job_id: str) -> None:
         try:

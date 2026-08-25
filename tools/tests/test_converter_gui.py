@@ -448,6 +448,46 @@ class ConverterGuiTests(unittest.TestCase):
         app._open_player_path.assert_called_once_with(Path("clip.BIN"), show_page=True)
         app._show_error.assert_not_called()
 
+    def test_completed_task_output_actions_use_the_generated_path(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.queue = converter_gui.ConversionQueue()
+        job = app.queue.add(
+            converter_gui.ConversionOptions(Path("clip.mp4"), Path("clip.BIN"))
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "clip.BIN"
+            job.state = "completed"
+            job.summary = SimpleNamespace(path=output)
+            app.clipboard = SimpleNamespace(set=mock.AsyncMock())
+            app._show_notice = mock.Mock()
+            app._show_error = mock.Mock()
+
+            asyncio.run(app._copy_completed_job_path(job.id))
+            with mock.patch.object(converter_gui.os, "startfile") as startfile:
+                app._open_completed_job_folder(job.id)
+
+            app.clipboard.set.assert_awaited_once_with(str(output.resolve()))
+            app._show_notice.assert_called_once_with("已复制输出文件路径")
+            startfile.assert_called_once_with(output.parent.resolve())
+            app._show_error.assert_not_called()
+
+    def test_completed_task_groups_secondary_actions_in_a_menu(self) -> None:
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        job = converter_gui.QueueJob(
+            converter_gui.ConversionOptions(Path("clip.mp4"), Path("clip.BIN")),
+            state="completed",
+            summary=SimpleNamespace(path=Path("clip.BIN")),
+        )
+
+        actions = app._task_row_actions(job)
+
+        menus = [item for item in actions if isinstance(item, converter_gui.ft.PopupMenuButton)]
+        self.assertEqual(1, len(menus))
+        self.assertEqual(
+            ["打开输出文件夹", "复制输出路径", "移除任务"],
+            [item.content for item in menus[0].items],
+        )
+
     def test_keyboard_shortcuts_open_files_and_start_conversion(self) -> None:
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.exit_dialog_open = False
