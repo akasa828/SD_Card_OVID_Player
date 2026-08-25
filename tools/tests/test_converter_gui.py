@@ -29,6 +29,10 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertEqual("01:01:01.25", converter_gui.format_timestamp(3661.25))
         self.assertEqual("--:--.--", converter_gui.format_timestamp(None))
 
+    def test_batch_result_distinguishes_successes_and_failures(self) -> None:
+        self.assertEqual("本轮完成：3/3 个任务", converter_gui.batch_result_text(3, 3))
+        self.assertEqual("本轮结束：2 成功 · 1 失败", converter_gui.batch_result_text(2, 3))
+
     def test_timeline_sliders_are_continuous_and_defer_seeking(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")
         trim_start = source.index("self.trim_slider = ft.RangeSlider(")

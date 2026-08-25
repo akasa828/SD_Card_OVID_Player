@@ -136,6 +136,28 @@ class ConverterServicesTests(unittest.TestCase):
             self.assertEqual(16, job.options.width)
             self.assertEqual("stm32f103-128x32", job.target_profile)
 
+    def test_completed_queue_job_is_not_selected_for_the_next_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = services.ConversionQueue()
+            job = queue.add(self.options(root))
+            summary = ovid_codec.OvidSummary(
+                job.options.output,
+                8,
+                8,
+                1,
+                15,
+                8,
+                28,
+                ovid_codec.OVID_V2,
+            )
+
+            queue.complete(job.id, summary)
+
+            self.assertEqual("completed", job.state)
+            self.assertFalse(job.selected)
+            self.assertIs(summary, job.summary)
+
     def test_conversion_logger_releases_handlers(self):
         with tempfile.TemporaryDirectory() as directory:
             logger = services.ConversionLogger(Path(directory))

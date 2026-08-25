@@ -266,6 +266,13 @@ def human_size(value: int | None) -> str:
     return f"{value / 1024 / 1024 / 1024:.2f} GiB"
 
 
+def batch_result_text(completed: int, total: int) -> str:
+    failed = max(0, total - completed)
+    if failed:
+        return f"本轮结束：{completed} 成功 · {failed} 失败"
+    return f"本轮完成：{completed}/{total} 个任务"
+
+
 def parse_drop_paths(value: object) -> list[Path]:
     """Decode desktop_drop event data without exposing JSON errors to the UI."""
     if isinstance(value, str):
@@ -2406,7 +2413,7 @@ class ConverterApp:
                         self._refresh_queue_view()
                         await asyncio.sleep(0.1)
                     summary = await worker
-                    self.queue.update(job.id, state="completed", summary=summary)
+                    self.queue.complete(job.id, summary)
                     completed += 1
                     self.batch_completed_count = completed
                     last_output = summary.path
@@ -2437,10 +2444,11 @@ class ConverterApp:
                         timeout=PROGRESS_FINISH_SECONDS + 0.1,
                     )
                 self.progress_bar.value = 1
-                self.progress_text.value = f"本轮完成：{completed}/{len(jobs)} 个任务"
+                result_text = batch_result_text(completed, len(jobs))
+                self.progress_text.value = result_text
                 if last_output is not None:
                     self._open_player_path(last_output, show_page=False)
-                self._show_notice(f"本轮转换完成：{completed}/{len(jobs)} 个任务")
+                self._show_notice(result_text)
             else:
                 self.progress_text.value = "本轮已停止，未开始的任务仍在等待"
         finally:

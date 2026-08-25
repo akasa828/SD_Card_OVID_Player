@@ -429,6 +429,15 @@ class ConversionQueue:
             job.error = ""
             return job
 
+    def complete(self, job_id: str, summary: OvidSummary) -> QueueJob:
+        with self._lock:
+            job = self.find(job_id)
+            job.state = "completed"
+            job.summary = summary
+            job.error = ""
+            job.selected = False
+            return job
+
     def replace_options(
         self,
         job_id: str,
