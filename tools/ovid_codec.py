@@ -290,6 +290,10 @@ def write_ovid_atomic(
             on_frame=on_frame,
             cancelled=cancelled,
         )
+        validation = validate_ovid(temporary)
+        if validation.bad_frames:
+            bad = ", ".join(str(index + 1) for index in validation.bad_frames[:8])
+            raise OvidFormatError(f"写出后校验失败，CRC 错误帧：{bad}")
         os.replace(temporary, output)
         return OvidSummary(
             output,

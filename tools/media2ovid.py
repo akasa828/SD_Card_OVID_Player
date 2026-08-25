@@ -31,7 +31,6 @@ from ovid_codec import (
     OvidSummary,
     OvidWriteCancelled,
     frame_bytes,
-    validate_ovid,
     write_ovid_atomic,
 )
 
@@ -642,7 +641,7 @@ def convert_media(
             last_report_count = count
 
     try:
-        summary = write_ovid_atomic(
+        return write_ovid_atomic(
             options.output,
             frames(),
             options.width,
@@ -652,11 +651,6 @@ def convert_media(
             on_frame=report,
             cancelled=cancelled,
         )
-        validation = validate_ovid(summary.path)
-        if validation.bad_frames:
-            bad = ", ".join(str(index + 1) for index in validation.bad_frames[:8])
-            raise ValueError(f"写出后校验失败，CRC 错误帧：{bad}")
-        return summary
     except OvidWriteCancelled as exc:
         raise ConversionCancelled(str(exc)) from exc
 

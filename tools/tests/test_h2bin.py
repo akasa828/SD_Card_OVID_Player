@@ -7,6 +7,7 @@ import unittest
 import zlib
 from argparse import Namespace
 from pathlib import Path
+from unittest import mock
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]
@@ -90,6 +91,32 @@ class H2BinTests(unittest.TestCase):
             output.write_bytes(damaged)
             with ovid_codec.OvidReader(output) as reader:
                 self.assertEqual((1,), reader.validate().bad_frames)
+
+    def test_atomic_writer_validates_before_replacing_existing_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "safe.BIN"
+            output.write_bytes(b"previous output")
+            temporary = output.with_name(output.name + ".part")
+            with mock.patch.object(
+                ovid_codec,
+                "validate_ovid",
+                side_effect=ovid_codec.OvidFormatError("simulated validation failure"),
+            ):
+                with self.assertRaisesRegex(
+                    ovid_codec.OvidFormatError,
+                    "simulated validation failure",
+                ):
+                    ovid_codec.write_ovid_atomic(
+                        output,
+                        [bytes(8)],
+                        8,
+                        8,
+                        15,
+                        force=True,
+                    )
+
+            self.assertEqual(b"previous output", output.read_bytes())
+            self.assertFalse(temporary.exists())
 
     def test_header_arrays_are_read_without_loading_the_whole_file(self):
         source_text = """
