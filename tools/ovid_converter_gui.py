@@ -667,7 +667,7 @@ class ConverterApp:
             "添加素材后，在这里单独调整它的参数。",
             size=12, color=ft.Colors.ON_SURFACE_VARIANT,
         )
-        self.source_field = ft.TextField(label="输入素材", read_only=True, expand=True)
+        self.source_field = ft.TextField(label="当前编辑素材", read_only=True, col={"xs": 12, "md": 6})
         self.output_field = ft.TextField(label="输出 OVID .BIN", read_only=True, expand=True)
         self.width_field = self._number_field(
             "输出宽度", self.settings.width, 1, 255, col=4, on_change=self._on_geometry_change
@@ -915,14 +915,9 @@ class ConverterApp:
                     ft.Icon(ft.Icons.VIDEO_FILE_OUTLINED, size=40, color=ft.Colors.OUTLINE),
                     ft.Text("还没有转换任务", size=16, weight=ft.FontWeight.W_500),
                     ft.Text(
-                        "添加视频、GIF、图片或图片目录后，可以在这里统一转换。",
+                        "使用上方“添加素材”或“添加图片目录”，然后勾选需要转换的任务。",
                         color=ft.Colors.ON_SURFACE_VARIANT,
                         text_align=ft.TextAlign.CENTER,
-                    ),
-                    ft.OutlinedButton(
-                        "添加素材",
-                        icon=ft.Icons.ADD,
-                        on_click=self._choose_file,
                     ),
                 ],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -1054,12 +1049,12 @@ class ConverterApp:
         source_actions = ft.Row(
             [
                 ft.OutlinedButton(
-                    "选择文件",
-                    icon=ft.Icons.INSERT_DRIVE_FILE,
-                    tooltip="选择文件 (Ctrl+O)",
+                    "添加素材",
+                    icon=ft.Icons.ADD,
+                    tooltip="添加图片、GIF 或视频，可多选 (Ctrl+O)",
                     on_click=self._choose_file,
                 ),
-                ft.OutlinedButton("选择图片目录", icon=ft.Icons.FOLDER_OPEN, on_click=self._choose_directory),
+                ft.OutlinedButton("添加图片目录", icon=ft.Icons.FOLDER_OPEN, on_click=self._choose_directory),
             ],
             wrap=True,
         )
@@ -1070,16 +1065,16 @@ class ConverterApp:
             [
                 self.output_field,
                 self.output_button,
-            ]
+            ],
+            col={"xs": 12, "md": 6},
         )
         input_card = self._card(
             "素材与输出",
             ft.Icons.INSERT_DRIVE_FILE,
             [
                 *([self.drop_zone] if self.drop_zone is not None else []),
-                self.source_field,
                 source_actions,
-                output_actions,
+                ft.ResponsiveRow([self.source_field, output_actions], spacing=12, run_spacing=12),
             ],
             col=12,
             key="source-card",
@@ -1235,16 +1230,6 @@ class ConverterApp:
             [
                 ft.Row(
                     [
-                        ft.OutlinedButton(
-                            "添加文件",
-                            icon=ft.Icons.PLAYLIST_ADD,
-                            on_click=self._choose_file,
-                        ),
-                        ft.OutlinedButton(
-                            "添加图片目录",
-                            icon=ft.Icons.CREATE_NEW_FOLDER,
-                            on_click=self._choose_directory,
-                        ),
                         self.select_all_button,
                         self.select_none_button,
                         self.clear_completed_button,
@@ -1265,7 +1250,6 @@ class ConverterApp:
         )
         self.convert_scroll = ft.Column(
             [
-                ft.Text("无需 IrfanView、Img2Lcd 或中间 .c/.h 文件。", color=ft.Colors.ON_SURFACE_VARIANT),
                 input_card,
                 self.editor_row,
                 action_card,
@@ -1714,6 +1698,7 @@ class ConverterApp:
         clickable = ft.Container(
             expand=True,
             padding=ft.Padding.symmetric(vertical=4),
+            tooltip="编辑此任务的参数；勾选框只决定是否参与转换",
             on_click=lambda _, job_id=job.id: asyncio.create_task(
                 self._activate_task(job_id, scroll_target="parameter-card")
             ),
@@ -3667,13 +3652,12 @@ class ConverterApp:
         content_width = width - 40 - (1 if compact else 89)
         split = content_width >= 960
         columns = 6 if split else 12
-        panel_height = max(480, min(720, height - 180)) if split else None
         changed = False
         for card in (self.preview_card, self.parameter_card):
-            if card.col != columns or card.height != panel_height:
+            if card.col != columns or card.height is not None or card.content.content.scroll is not None:
                 card.col = columns
-                card.height = panel_height
-                card.content.content.scroll = ft.ScrollMode.AUTO if split else None
+                card.height = None
+                card.content.content.scroll = None
                 changed = True
         return changed
 

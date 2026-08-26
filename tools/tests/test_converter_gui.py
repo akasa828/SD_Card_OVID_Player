@@ -133,7 +133,7 @@ class ConverterGuiTests(unittest.TestCase):
         app.page.height = 700
         app._on_resize()
         self.assertEqual(
-            (app.editor_row,),
+            (app.original_preview_image, app.preview_image),
             app.page.update.call_args.args,
         )
 
@@ -146,19 +146,63 @@ class ConverterGuiTests(unittest.TestCase):
         app._on_resize()
         app.page.update.assert_not_called()
 
-    def test_editor_panels_split_with_bounded_scroll_and_stack_on_small_windows(self):
+    def test_editor_panels_share_page_scrolling_and_stack_on_small_windows(self):
         app = self.make_editor()
         self.assertTrue(app._resize_editor_panels(1120, 760, False))
         for card in (app.preview_card, app.parameter_card):
             self.assertEqual(6, card.col)
-            self.assertEqual(580, card.height)
-            self.assertEqual(converter_gui.ft.ScrollMode.AUTO, card.content.content.scroll)
+            self.assertIsNone(card.height)
+            self.assertIsNone(card.content.content.scroll)
         self.assertFalse(app._resize_editor_panels(1120, 760, False))
         self.assertTrue(app._resize_editor_panels(700, 600, True))
         for card in (app.preview_card, app.parameter_card):
             self.assertEqual(12, card.col)
             self.assertIsNone(card.height)
             self.assertIsNone(card.content.content.scroll)
+
+    @classmethod
+    def controls_in(cls, root):
+        yield root
+        for attribute in ("controls", "content", "leading", "trailing", "title", "subtitle", "actions"):
+            children = getattr(root, attribute, None)
+            if isinstance(children, converter_gui.ft.Control):
+                yield from cls.controls_in(children)
+            elif isinstance(children, (tuple, list)):
+                for child in children:
+                    if isinstance(child, converter_gui.ft.Control):
+                        yield from cls.controls_in(child)
+
+    def test_material_import_has_one_entry_per_source_type(self):
+        app = self.make_editor()
+        controls = list(self.controls_in(app.convert_page))
+        file_buttons = [control for control in controls if getattr(control, "on_click", None) == app._choose_file]
+        directory_buttons = [control for control in controls if getattr(control, "on_click", None) == app._choose_directory]
+        self.assertEqual(1, len(file_buttons))
+        self.assertEqual(1, len(directory_buttons))
+        self.assertEqual("添加素材", file_buttons[0].content)
+        self.assertIn("可多选", file_buttons[0].tooltip)
+        self.assertEqual("添加图片目录", directory_buttons[0].content)
+        self.assertEqual("当前编辑素材", app.source_field.label)
+        self.assertFalse(app.source_field.expand)
+
+    def test_converter_has_one_scroll_area_at_all_supported_widths(self):
+        app = self.make_editor()
+        for width, height in ((680, 600), (800, 700), (1120, 760), (1600, 1000)):
+            with self.subTest(width=width, height=height):
+                app._resize_editor_panels(width, height, width < 800)
+                scrollers = [control for control in self.controls_in(app.convert_page)
+                             if getattr(control, "scroll", None) is not None]
+                self.assertEqual([app.convert_scroll], scrollers)
+                self.assertNotIn(app.convert_button, list(self.controls_in(app.convert_scroll)))
+                self.assertIn(app.convert_button, list(self.controls_in(app.convert_page.controls[-1])))
+
+    def test_task_edit_target_explains_its_difference_from_selection(self):
+        app = self.make_editor()
+        job = app.queue.add(converter_gui.ConversionOptions(Path("clip.mp4"), Path("clip.BIN")))
+        row = app._create_task_row(job)
+        clickable = row.container.content.controls[1]
+        self.assertIn("编辑此任务", clickable.tooltip)
+        self.assertIn("勾选框", clickable.tooltip)
 
     def test_editor_header_distinguishes_active_task_from_checked_tasks(self):
         app = self.make_editor()
