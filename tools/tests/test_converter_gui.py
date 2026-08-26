@@ -525,7 +525,7 @@ class ConverterGuiTests(unittest.TestCase):
         preset_end = source.index("self.preset_name_field", preset_start)
         preset_source = source[preset_start:preset_end]
         self.assertNotIn("expand=True", preset_source)
-        self.assertIn('col={"xs": 12, "md": 8}', preset_source)
+        self.assertIn('col=10', preset_source)
         self.assertIn('ft.Text("画面与时间"', source)
         self.assertIn('ft.Text("黑白处理"', source)
 
@@ -896,6 +896,8 @@ class ConverterGuiTests(unittest.TestCase):
             app.queue = converter_gui.ConversionQueue()
             app.target_dropdown = SimpleNamespace(value="stm32f103-128x64")
             app.logger = SimpleNamespace(event=mock.Mock())
+            app._validate_editor_numbers = mock.Mock(return_value=True)
+            app._save_editor_before_action = mock.Mock(return_value=True)
             app._options_for_source = mock.Mock(
                 side_effect=lambda source, output, use_current_trim: converter_gui.ConversionOptions(
                     source,

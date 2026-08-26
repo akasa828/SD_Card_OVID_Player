@@ -176,7 +176,7 @@ class PresetStore:
 
     def upsert(self, preset: ConversionPreset) -> None:
         preset.validate()
-        if any(item.name == preset.name and item.builtin for item in BUILTIN_PRESETS):
+        if any(item.name.casefold() == preset.name.casefold() for item in BUILTIN_PRESETS):
             raise ValueError("内置预设不能被覆盖")
         values = self.load_user_presets()
         replacement = replace(preset, builtin=False)

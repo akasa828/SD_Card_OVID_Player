@@ -769,13 +769,39 @@ class ConverterApp:
         )
         self.preset_dropdown = ft.Dropdown(
             label="转换预设",
+            hint_text="自定义参数",
             value=BUILTIN_PRESETS[0].name,
             options=[],
             on_select=self._apply_selected_preset,
-            col={"xs": 12, "md": 8},
+            col=10,
         )
         self.preset_name_field = ft.TextField(label="新预设名称", expand=True)
         self._refresh_preset_options()
+
+        self.preset_menu = ft.PopupMenuButton(
+            icon=ft.Icons.MORE_VERT,
+            tooltip="管理预设",
+            items=[
+                ft.PopupMenuItem(content="保存当前参数", icon=ft.Icons.SAVE_AS,
+                                 on_click=self._save_preset_dialog),
+                ft.PopupMenuItem(content="删除所选自定义预设", icon=ft.Icons.DELETE_OUTLINE,
+                                 on_click=self._delete_selected_preset),
+                ft.PopupMenuItem(content="清空自定义预设", icon=ft.Icons.RESTORE,
+                                 on_click=self._reset_user_presets),
+            ],
+        )
+        self.auto_threshold_menu = ft.PopupMenuButton(
+            tooltip="根据当前预览帧分析，确认后应用",
+            content=ft.Row([
+                ft.Icon(ft.Icons.AUTO_FIX_HIGH, size=18),
+                ft.Text("自动阈值"), ft.Icon(ft.Icons.ARROW_DROP_DOWN),
+            ], tight=True, spacing=6),
+            items=[
+                ft.PopupMenuItem(content="标准", data="standard", on_click=self._auto_threshold_clicked),
+                ft.PopupMenuItem(content="保留暗部", data="dark-detail", on_click=self._auto_threshold_clicked),
+                ft.PopupMenuItem(content="减少噪点", data="noise-reduction", on_click=self._auto_threshold_clicked),
+            ],
+        )
 
         self.drop_zone = None
         if FletDropZone is not None:
@@ -977,6 +1003,7 @@ class ConverterApp:
             expand=True,
             vertical_alignment=ft.CrossAxisAlignment.STRETCH,
         )
+        self._sync_preset_selection()
 
     def _number_field(
         self,
@@ -1114,26 +1141,10 @@ class ConverterApp:
                 ft.ResponsiveRow(
                     [
                         self.preset_dropdown,
-                        ft.Row(
-                            [
-                                ft.IconButton(
-                                    icon=ft.Icons.SAVE_AS,
-                                    tooltip="保存当前参数为预设",
-                                    on_click=self._save_preset_dialog,
-                                ),
-                                ft.IconButton(
-                                    icon=ft.Icons.DELETE_OUTLINE,
-                                    tooltip="删除用户预设",
-                                    on_click=self._delete_selected_preset,
-                                ),
-                                ft.IconButton(
-                                    icon=ft.Icons.RESTORE,
-                                    tooltip="清除用户预设并恢复内置预设",
-                                    on_click=self._reset_user_presets,
-                                ),
-                            ],
-                            col={"xs": 12, "md": 4},
-                            alignment=ft.MainAxisAlignment.END,
+                        ft.Container(
+                            content=self.preset_menu,
+                            col=2,
+                            alignment=ft.Alignment.CENTER_RIGHT,
                         ),
                     ],
                     spacing=8,
@@ -1162,27 +1173,7 @@ class ConverterApp:
                                 ft.Text("黑白处理", weight=ft.FontWeight.W_600),
                                 self.dither_control,
                                 self.threshold_slider,
-                                ft.Row(
-                                    [
-                                        ft.Text("自动阈值"),
-                                        ft.OutlinedButton(
-                                            "标准",
-                                            data="standard",
-                                            on_click=self._auto_threshold_clicked,
-                                        ),
-                                        ft.OutlinedButton(
-                                            "保留暗部",
-                                            data="dark-detail",
-                                            on_click=self._auto_threshold_clicked,
-                                        ),
-                                        ft.OutlinedButton(
-                                            "减少噪点",
-                                            data="noise-reduction",
-                                            on_click=self._auto_threshold_clicked,
-                                        ),
-                                    ],
-                                    wrap=True,
-                                ),
+                                self.auto_threshold_menu,
                                 self.invert_switch,
                             ],
                             col={"xs": 12, "lg": 6},
@@ -1539,6 +1530,9 @@ class ConverterApp:
     async def _add_sources(self, sources) -> None:
         sources = [Path(source) for source in sources]
         if not sources:
+            return
+        if not self._validate_editor_numbers() or not self._save_editor_before_action():
+            self._show_notice("请先修正当前参数，再添加素材。")
             return
         configured_output_dir = (
             Path(self.settings.output_directory)
@@ -2023,6 +2017,9 @@ class ConverterApp:
             await self._add_sources([Path(selected)])
 
     async def _choose_output(self, _):
+        job_id = self.active_task_id
+        if not self._can_edit_task(job_id) or not self._save_editor_before_action():
+            return
         source = Path(self.source_field.value) if self.source_field.value else None
         suggested = f"{source.stem if source else 'OUTPUT'}.BIN"
         selected = await self.file_picker.save_file(
@@ -2032,11 +2029,19 @@ class ConverterApp:
             allowed_extensions=["BIN", "bin"],
         )
         if selected:
+            if not self._can_edit_task(job_id):
+                self._show_notice("任务已切换或开始转换，未修改输出位置。")
+                return
             path = Path(selected)
             if path.suffix.casefold() != ".bin":
                 path = path.with_suffix(".BIN")
+            previous = self.output_field.value
             self.output_field.value = str(path)
-            self._save_active_task_options()
+            if self._save_active_task_options():
+                self._refresh_queue_view()
+            else:
+                self.output_field.value = previous
+                self._show_notice("请先修正任务参数，再选择输出位置。")
             self.page.update(self.output_field)
 
     async def _choose_ovid_file(self, _):
@@ -2247,6 +2252,15 @@ class ConverterApp:
         self.preview_label.value = "正在载入预览…"
         self.page.update()
 
+    def _can_edit_task(self, job_id: str | None) -> bool:
+        if job_id is None or job_id != self.active_task_id:
+            return False
+        try:
+            job = self.queue.find(job_id)
+        except KeyError:
+            return False
+        return not job.frozen and job.state != "running"
+
     def _load_option_controls(self, options: ConversionOptions, target_profile: str) -> None:
         self.loading_task_controls = True
         try:
@@ -2267,6 +2281,7 @@ class ConverterApp:
             self.task_fast_video_switch.value = options.fast_video
         finally:
             self.loading_task_controls = False
+        self._sync_preset_selection()
 
     def _load_default_editor_options(self) -> None:
         options = ConversionOptions(
@@ -2364,6 +2379,8 @@ class ConverterApp:
                 options,
                 target_profile=self.target_dropdown.value,
             )
+            if self._sync_preset_selection() and self.page_index == 0:
+                self.page.update(self.preset_dropdown)
             return True
         except (KeyError, OSError, ValueError):
             return False
@@ -3092,9 +3109,32 @@ class ConverterApp:
             ft.DropdownOption(key=preset.name, text=preset.name) for preset in presets
         ]
         if not any(preset.name == self.preset_dropdown.value for preset in presets):
-            self.preset_dropdown.value = presets[0].name
+            self.preset_dropdown.value = None
+
+    def _sync_preset_selection(self) -> bool:
+        try:
+            current = ConversionPreset.from_options(
+                "", self._options_for_source(Path(), Path("preview.bin"), use_current_trim=False),
+                self.target_dropdown.value,
+            )
+        except (TypeError, ValueError):
+            changed = self.preset_dropdown.value is not None
+            self.preset_dropdown.value = None
+            return changed
+        matches = [
+            preset.name for preset in self.preset_store.all_presets()
+            if replace(preset, name="", builtin=False) == current
+        ]
+        selected = self.preset_dropdown.value
+        if selected in matches:
+            return False
+        self.preset_dropdown.value = matches[0] if matches else None
+        return selected != self.preset_dropdown.value
 
     def _apply_selected_preset(self, _):
+        if self.active_task_id is not None and not self._can_edit_task(self.active_task_id):
+            self._show_notice("本轮任务的参数已锁定，停止转换后才能应用预设。")
+            return
         preset = next(
             (item for item in self.preset_store.all_presets() if item.name == self.preset_dropdown.value),
             None,
@@ -3121,10 +3161,17 @@ class ConverterApp:
             asyncio.create_task(self._on_geometry_change(None))
 
     def _save_preset_dialog(self, _):
+        if not self._validate_editor_numbers():
+            return
+        self.pending_preset_options = self._options_for_source(
+            Path(), Path("preview.bin"), use_current_trim=False
+        )
+        self.pending_preset_target = self.target_dropdown.value
         self.preset_name_field.value = ""
         self.page.show_dialog(
             ft.AlertDialog(
                 title="保存转换预设",
+                modal=True,
                 content=self.preset_name_field,
                 actions=[
                     ft.TextButton("取消", on_click=lambda _: self.page.pop_dialog()),
@@ -3135,19 +3182,58 @@ class ConverterApp:
 
     def _confirm_save_preset(self, _):
         try:
-            options = self._options(require_output=False)
             preset = ConversionPreset.from_options(
                 self.preset_name_field.value.strip(),
-                options,
-                self.target_dropdown.value,
+                self.pending_preset_options,
+                self.pending_preset_target,
             )
+            preset.validate()
+            existing = next(
+                (item for item in self.preset_store.all_presets()
+                 if item.name.casefold() == preset.name.casefold()), None,
+            )
+            if existing is not None and existing.builtin:
+                raise ValueError("内置预设不能被覆盖，请换一个名称。")
+            if existing is not None:
+                self.page.pop_dialog()
+                self._confirm_preset_action(
+                    "覆盖已有预设？",
+                    f"将替换“{existing.name}”的参数，已有转换任务保持不变。",
+                    "覆盖", lambda: self._store_preset(preset),
+                )
+            else:
+                self.page.pop_dialog()
+                self._store_preset(preset)
+        except Exception as exc:
+            self._show_error("无法保存预设", exc)
+
+    def _store_preset(self, preset: ConversionPreset) -> None:
+        try:
             self.preset_store.upsert(preset)
             self._refresh_preset_options()
             self.preset_dropdown.value = preset.name
-            self.page.pop_dialog()
+            self._sync_preset_selection()
             self.page.update(self.preset_dropdown)
-        except Exception as exc:
+            self._show_notice(f"已保存预设：{preset.name}")
+        except (OSError, ValueError) as exc:
             self._show_error("无法保存预设", exc)
+
+    def _confirm_preset_action(self, title: str, message: str, action: str, callback) -> None:
+        def confirm(_):
+            self.page.pop_dialog()
+            try:
+                callback()
+            except (OSError, ValueError) as exc:
+                self._show_error("无法修改预设", exc)
+        self.page.show_dialog(ft.AlertDialog(
+            title=title,
+            modal=True,
+            content=ft.Text(message),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self.page.pop_dialog()),
+                ft.FilledButton(action, on_click=confirm),
+            ],
+        ))
 
     def _delete_selected_preset(self, _):
         preset = next(
@@ -3159,19 +3245,30 @@ class ConverterApp:
         if preset.builtin:
             self._show_error("无法删除预设", ValueError("内置预设不能删除"))
             return
-        self.preset_store.delete(preset.name)
+        self._confirm_preset_action(
+            "删除这个预设？", f"删除“{preset.name}”，不会修改已有任务或素材。",
+            "删除", lambda: self._delete_preset(preset.name),
+        )
+
+    def _delete_preset(self, name: str) -> None:
+        self.preset_store.delete(name)
         self._refresh_preset_options()
+        self._sync_preset_selection()
         self.page.update(self.preset_dropdown)
 
     def _reset_user_presets(self, _):
-        try:
-            self.preset_store.reset()
-            self._refresh_preset_options()
-            self.preset_dropdown.value = BUILTIN_PRESETS[0].name
-            self._apply_selected_preset(None)
-            self._show_notice("已清除用户预设并恢复内置预设")
-        except Exception as exc:
-            self._show_error("无法恢复预设", exc)
+        self._confirm_preset_action(
+            "清空自定义预设？",
+            "会删除自己创建的全部预设，内置预设保留。当前画面参数和转换任务不会改变。",
+            "清空", self._clear_user_presets,
+        )
+
+    def _clear_user_presets(self) -> None:
+        self.preset_store.reset()
+        self._refresh_preset_options()
+        self._sync_preset_selection()
+        self.page.update(self.preset_dropdown)
+        self._show_notice("已清空自定义预设，当前参数保持不变。")
 
     async def _on_dither_change(self, _):
         self.threshold_slider.disabled = self.dither_control.selected[0] != "threshold"
