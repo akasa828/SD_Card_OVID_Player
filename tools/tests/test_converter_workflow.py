@@ -57,16 +57,16 @@ class ConverterWorkflowTests(unittest.IsolatedAsyncioTestCase):
     def test_manual_edits_show_custom_parameters_instead_of_stale_preset_name(self):
         self.add_task()
         self.assertEqual(gui.BUILTIN_PRESETS[0].name, self.app.preset_dropdown.value)
-        self.app.threshold_slider.value = 42
+        self.app._set_threshold_value(42)
         self.assertTrue(self.app._save_active_task_options())
         self.assertIsNone(self.app.preset_dropdown.value)
-        self.app.threshold_slider.value = 128
+        self.app._set_threshold_value(128)
         self.assertTrue(self.app._save_active_task_options())
         self.assertEqual(gui.BUILTIN_PRESETS[0].name, self.app.preset_dropdown.value)
 
     async def test_reset_requires_confirmation_and_keeps_task_parameters(self):
         job = self.add_task()
-        self.app.threshold_slider.value = 42
+        self.app._set_threshold_value(42)
         self.app._save_active_task_options()
         options = job.options
         self.app._reset_user_presets(None)
@@ -93,7 +93,7 @@ class ConverterWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     def test_save_existing_preset_requires_confirmation(self):
         self.add_task()
-        self.app.threshold_slider.value = 64
+        self.app._set_threshold_value(64)
         self.app._save_preset_dialog(None)
         self.app.preset_name_field.value = "Mine"
         self.app._confirm_save_preset(None)
@@ -117,10 +117,10 @@ class ConverterWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     def test_preset_save_uses_parameters_captured_when_dialog_opened(self):
         self.add_task()
-        self.app.threshold_slider.value = 64
+        self.app._set_threshold_value(64)
         self.app._save_preset_dialog(None)
         self.app.preset_name_field.value = "Snapshot"
-        self.app.threshold_slider.value = 200
+        self.app._set_threshold_value(200)
         self.app._confirm_save_preset(None)
         preset = next(item for item in self.app.preset_store.load_user_presets() if item.name == "Snapshot")
         self.assertEqual(64, preset.threshold)

@@ -101,6 +101,38 @@ class PreviewStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(mock.sentinel.new_key, self.app.source_info_key)
         trim.assert_called_once_with(mock.sentinel.old_metadata, options)
 
+    async def test_first_frame_uses_parameters_changed_during_metadata_loading(self):
+        self.app.preview = gui.PreviewSession()
+        self.app._refresh_queue_view = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "gray.png"
+            Image.new("L", (8, 8), 180).save(source)
+            job = self.app.queue.add(gui.ConversionOptions(
+                source, Path(directory) / "gray.BIN", width=8, height=8,
+            ))
+            self.app.active_task_id = job.id
+            self.app._load_job_controls(job)
+            probe = self.app._source_info_for_options
+
+            async def change_options_while_loading(options):
+                info = await probe(options)
+                self.app.threshold_slider.value = 200
+                await self.app._on_threshold_change(None)
+                return info
+
+            self.app._source_info_for_options = change_options_while_loading
+            try:
+                await self.app._load_first_preview()
+                self.app._show_error.assert_not_called()
+                self.assertEqual(200, job.options.threshold)
+                self.assertEqual(200, self.app.preview.options.threshold)
+                png = self.app._set_preview_frame.call_args.args[1]
+                with Image.open(io.BytesIO(png)) as result:
+                    self.assertEqual(0, result.convert("L").getpixel((0, 0)))
+                self.app._set_preview_frame.assert_called_once()
+            finally:
+                await self.app._close_preview_if_current(self.app.preview_revision)
+
     async def test_waiting_frame_steps_cannot_consume_a_new_sources_frames(self):
         for method in ("_preview_next", "_preview_previous"):
             with self.subTest(method=method):
@@ -115,6 +147,77 @@ class PreviewStateTests(unittest.IsolatedAsyncioTestCase):
                 await task
                 self.app.preview.next_frame.assert_not_called()
                 self.app.preview.previous_frame.assert_not_called()
+
+    async def test_load_applies_algorithm_and_inversion_edits_before_showing_frame(self):
+        self.app._refresh_queue_view = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "gray.png"
+            Image.new("L", (8, 8), 180).save(source)
+            probe = self.app._source_info_for_options
+            for edit in ("floyd", "invert"):
+                with self.subTest(edit=edit):
+                    self.app.preview = gui.PreviewSession()
+                    self.app._set_preview_frame.reset_mock()
+                    job = self.app.queue.add(gui.ConversionOptions(
+                        source, Path(directory) / f"{edit}.BIN", width=8, height=8,
+                    ))
+                    self.app.active_task_id = job.id
+                    self.app._load_job_controls(job)
+
+                    async def change_options_while_loading(options):
+                        info = await probe(options)
+                        if edit == "floyd":
+                            self.app.dither_control.selected = ["floyd"]
+                            await self.app._on_dither_change(None)
+                        else:
+                            self.app.invert_switch.value = True
+                            await self.app._on_invert_change(None)
+                        return info
+
+                    self.app._source_info_for_options = change_options_while_loading
+                    try:
+                        await self.app._load_first_preview()
+                        self.app._show_error.assert_not_called()
+                        self.assertEqual(job.options.dither, self.app.preview.options.dither)
+                        self.assertEqual(job.options.invert, self.app.preview.options.invert)
+                        original = Image.new("L", (8, 8), 180)
+                        expected = gui.preview_prepared_png(
+                            gui.prepare_monochrome_source(original, job.options),
+                            job.options, scale=4,
+                        )
+                        self.assertEqual(expected, self.app._set_preview_frame.call_args.args[1])
+                        self.app._set_preview_frame.assert_called_once()
+                    finally:
+                        await self.app._close_preview_if_current(self.app.preview_revision)
+
+    async def test_parameter_changes_during_rerender_are_reconciled_again(self):
+        self.app.preview_render_revision = 1
+        self.app._set_threshold_value(64)
+        async def render(_callback, *_args):
+            if self.app.preview_render_revision == 1:
+                self.app._set_threshold_value(200)
+                self.app.preview_render_revision += 1
+                return b"source", b"obsolete", 1
+            return b"source", b"current", 1
+        with mock.patch.object(gui.asyncio, "to_thread", side_effect=render) as worker:
+            result = await self.app._reconcile_preview_frame((b"source", b"old", 1), 1, 0)
+        self.assertEqual(b"current", result[1])
+        self.assertEqual([64, 200], [call.args[2] for call in worker.call_args_list])
+
+    async def test_reconcile_does_not_render_an_obsolete_source(self):
+        self.app.preview_revision = 2
+        self.app.preview_render_revision = 1
+        frame = (b"source", b"old", 1)
+        self.assertEqual(frame, await self.app._reconcile_preview_frame(frame, 1, 0))
+        self.app.preview.rerender_current.assert_not_called()
+
+    def test_offscreen_preview_updates_cached_frame_without_patching_unmounted_controls(self):
+        self.app.page_index = 2
+        self.app.preview.options = None
+        gui.ConverterApp._set_preview_frame(self.app, b"source", b"new", "ready", index=1)
+        self.assertEqual(b"new", self.app.preview_image.src)
+        self.assertEqual("ready", self.app.preview_label.value)
+        self.app.page.update.assert_not_called()
 
     async def test_superseded_load_stops_before_resetting_the_decoder(self):
         self.add_task()

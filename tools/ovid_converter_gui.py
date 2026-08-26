@@ -670,13 +670,13 @@ class ConverterApp:
         self.source_field = ft.TextField(label="输入素材", read_only=True, expand=True)
         self.output_field = ft.TextField(label="输出 OVID .BIN", read_only=True, expand=True)
         self.width_field = self._number_field(
-            "宽度", self.settings.width, 1, 255, col=3, on_change=self._on_geometry_change
+            "输出宽度", self.settings.width, 1, 255, col=4, on_change=self._on_geometry_change
         )
         self.height_field = self._number_field(
-            "高度", self.settings.height, 1, 255, col=3, on_change=self._on_geometry_change
+            "输出高度", self.settings.height, 1, 255, col=4, on_change=self._on_geometry_change
         )
         self.fps_field = self._number_field(
-            "FPS", self.settings.fps, 1, 120, col=3, on_change=self._on_geometry_change
+            "FPS", self.settings.fps, 1, 120, col=4, on_change=self._on_geometry_change
         )
         self.skip_frames_field = self._number_field(
             "跳过开头帧", 0, 0, 999999, col=6, on_change=self._on_geometry_change
@@ -725,7 +725,13 @@ class ConverterApp:
             label="阈值 {value}",
             disabled=False,
             on_change=self._on_threshold_change,
+            expand=True,
         )
+        self.threshold_field = self._number_field(
+            "阈值", 128, 0, 255, on_change=self._on_threshold_input_change,
+        )
+        self.threshold_field.width = 108
+        self.threshold_field.tooltip = "直接输入 0–255，或拖动左侧滑块；修改会实时更新预览。"
         self.background_dropdown = ft.Dropdown(
             label="补边与透明背景",
             value="black",
@@ -759,7 +765,8 @@ class ConverterApp:
             on_change=self._on_task_option_change,
         )
         self.target_dropdown = ft.Dropdown(
-            label="目标屏幕",
+            label="设备屏幕（兼容性检查）",
+            tooltip="只检查能否在设备上显示，不改变视频输出尺寸。",
             value=self.settings.target_profile,
             options=[
                 ft.DropdownOption(key=key, text=value[0])
@@ -1164,6 +1171,10 @@ class ConverterApp:
                                 ),
                                 self.fit_dropdown,
                                 self.target_dropdown,
+                                ft.Text(
+                                    "设备屏幕用于检查兼容性，不改变输出尺寸。",
+                                    size=12, color=ft.Colors.ON_SURFACE_VARIANT,
+                                ),
                             ],
                             col={"xs": 12, "lg": 6},
                             spacing=12,
@@ -1172,7 +1183,11 @@ class ConverterApp:
                             [
                                 ft.Text("黑白处理", weight=ft.FontWeight.W_600),
                                 self.dither_control,
-                                self.threshold_slider,
+                                ft.Row(
+                                    [self.threshold_slider, self.threshold_field],
+                                    spacing=8,
+                                    vertical_alignment=ft.CrossAxisAlignment.START,
+                                ),
                                 self.auto_threshold_menu,
                                 self.invert_switch,
                             ],
@@ -1503,7 +1518,11 @@ class ConverterApp:
             fps=int(self.fps_field.value),
             fit=self.fit_dropdown.value,
             dither=self.dither_control.selected[0],
-            threshold=int(self.threshold_slider.value),
+            threshold=(
+                int(self.threshold_field.value)
+                if self.dither_control.selected[0] == "threshold"
+                else round(float(self.threshold_slider.value))
+            ),
             invert=self.invert_switch.value,
             background=self.background_dropdown.value,
             recursive=self.recursive_switch.value,
@@ -2270,8 +2289,8 @@ class ConverterApp:
             self.skip_frames_field.value = str(options.skip_frames)
             self.fit_dropdown.value = options.fit
             self.dither_control.selected = [options.dither]
-            self.threshold_slider.value = options.threshold
-            self.threshold_slider.disabled = options.dither != "threshold"
+            self._set_threshold_value(options.threshold)
+            self._set_threshold_enabled()
             self.invert_switch.value = options.invert
             self.background_dropdown.value = options.background
             self.recursive_switch.value = options.recursive
@@ -2322,12 +2341,15 @@ class ConverterApp:
     def _validate_editor_numbers(self) -> bool:
         valid = True
         changed = []
-        for field, minimum, maximum in (
+        fields = [
             (self.width_field, 1, 255),
             (self.height_field, 1, 255),
             (self.fps_field, 1, 120),
             (self.skip_frames_field, 0, 999999),
-        ):
+        ]
+        if self.dither_control.selected[0] == "threshold":
+            fields.append((self.threshold_field, 0, 255))
+        for field, minimum, maximum in fields:
             try:
                 value = int(field.value)
                 error = None if minimum <= value <= maximum else f"请输入 {minimum}–{maximum}"
@@ -2337,7 +2359,7 @@ class ConverterApp:
             if field.error != error:
                 field.error = error
                 changed.append(field)
-        if changed:
+        if changed and self.page_index == 0:
             self.page.update(*changed)
         return valid
 
@@ -2405,7 +2427,7 @@ class ConverterApp:
         )
         for control in controls:
             control.disabled = locked
-        self.threshold_slider.disabled = locked or self.dither_control.selected[0] != "threshold"
+        self._set_threshold_enabled(locked=locked)
         self.parameter_card.disabled = locked
         self.trim_controls.disabled = locked
         self.output_button.disabled = locked
@@ -2474,8 +2496,10 @@ class ConverterApp:
         self.preview_playback_revision += 1
         self.preview_render_revision += 1
         self.preview_play_button.icon = ft.Icons.PLAY_ARROW
-        self.page.update(self.preview_play_button)
+        if self.page_index == 0:
+            self.page.update(self.preview_play_button)
         revision = self.preview_revision
+        render_revision = self.preview_render_revision
         try:
             options = self._options(require_output=False)
             first_probe = self.source_info is None
@@ -2491,7 +2515,10 @@ class ConverterApp:
                 await asyncio.to_thread(self.preview.reset, options, info)
                 if revision != self.preview_revision:
                     return
-                original, data, index = await asyncio.to_thread(self.preview.next_frame)
+                frame = await asyncio.to_thread(self.preview.next_frame)
+                original, data, index = await self._reconcile_preview_frame(
+                    frame, revision, render_revision
+                )
             if revision != self.preview_revision:
                 return
             if first_probe:
@@ -2515,11 +2542,15 @@ class ConverterApp:
 
     async def _preview_next(self, _=None) -> bool:
         revision = self.preview_revision
+        render_revision = self.preview_render_revision
         try:
             async with self.preview_lock:
                 if revision != self.preview_revision:
                     return False
-                original, data, index = await asyncio.to_thread(self.preview.next_frame)
+                frame = await asyncio.to_thread(self.preview.next_frame)
+                original, data, index = await self._reconcile_preview_frame(
+                    frame, revision, render_revision
+                )
             if revision != self.preview_revision:
                 return False
             self._set_preview_frame(original, data, f"第 {index} 帧", index=index)
@@ -2538,11 +2569,15 @@ class ConverterApp:
 
     async def _preview_previous(self, _):
         revision = self.preview_revision
+        render_revision = self.preview_render_revision
         try:
             async with self.preview_lock:
                 if revision != self.preview_revision:
                     return
-                original, data, index = await asyncio.to_thread(self.preview.previous_frame)
+                frame = await asyncio.to_thread(self.preview.previous_frame)
+                original, data, index = await self._reconcile_preview_frame(
+                    frame, revision, render_revision
+                )
             if revision != self.preview_revision:
                 return
             self._set_preview_frame(original, data, f"第 {index} 帧", index=index)
@@ -2550,6 +2585,26 @@ class ConverterApp:
             if revision != self.preview_revision:
                 return
             self._show_error("无法读取上一帧", exc)
+
+    async def _reconcile_preview_frame(
+        self,
+        frame: tuple[bytes, bytes, int],
+        source_revision: int,
+        render_revision: int,
+    ) -> tuple[bytes, bytes, int]:
+        """With preview_lock held, apply edits made while a frame was decoding."""
+        while (
+            source_revision == self.preview_revision
+            and render_revision != self.preview_render_revision
+        ):
+            render_revision = self.preview_render_revision
+            frame = await asyncio.to_thread(
+                self.preview.rerender_current,
+                self.dither_control.selected[0],
+                round(float(self.threshold_slider.value)),
+                bool(self.invert_switch.value),
+            )
+        return frame
 
     def _set_preview_frame(
         self,
@@ -2585,7 +2640,8 @@ class ConverterApp:
                 f"{format_timestamp(position)} / {format_timestamp(total)}"
             )
             controls.append(self.preview_time_label)
-        self.page.update(*controls)
+        if self.page_index == 0:
+            self.page.update(*controls)
 
     def _pause_preview_for_drag(self) -> None:
         self.resume_preview_after_drag = self.preview_playing
@@ -2640,6 +2696,7 @@ class ConverterApp:
             return
         self.preview_revision += 1
         revision = self.preview_revision
+        render_revision = self.preview_render_revision
         self.preview_playing = False
         self.preview_playback_revision += 1
         self.preview_time_label.value = (
@@ -2667,7 +2724,10 @@ class ConverterApp:
                 await asyncio.to_thread(self.preview.reset, seek_options, info)
                 if revision != self.preview_revision:
                     return
-                original, data, index = await asyncio.to_thread(self.preview.next_frame)
+                frame = await asyncio.to_thread(self.preview.next_frame)
+                original, data, index = await self._reconcile_preview_frame(
+                    frame, revision, render_revision
+                )
             if revision != self.preview_revision:
                 return
             self._set_preview_frame(
@@ -3094,9 +3154,10 @@ class ConverterApp:
             self._show_notice("任务或预览已变化，请重新分析阈值。")
             return
         self.dither_control.selected = ["threshold"]
-        self.threshold_slider.disabled = False
-        self.threshold_slider.value = value
-        self.page.update(self.dither_control, self.threshold_slider)
+        self._set_threshold_value(value)
+        self._set_threshold_enabled()
+        if self.page_index == 0:
+            self.page.update(self.dither_control, self.threshold_slider, self.threshold_field)
         if self._save_active_task_options():
             self._refresh_queue_view()
         asyncio.create_task(self._rerender_current_preview())
@@ -3146,8 +3207,8 @@ class ConverterApp:
         self.fps_field.value = str(preset.fps)
         self.fit_dropdown.value = preset.fit
         self.dither_control.selected = [preset.dither]
-        self.threshold_slider.value = preset.threshold
-        self.threshold_slider.disabled = preset.dither != "threshold"
+        self._set_threshold_value(preset.threshold)
+        self._set_threshold_enabled()
         self.invert_switch.value = preset.invert
         self.background_dropdown.value = preset.background
         self.recursive_switch.value = preset.recursive
@@ -3270,19 +3331,83 @@ class ConverterApp:
         self.page.update(self.preset_dropdown)
         self._show_notice("已清空自定义预设，当前参数保持不变。")
 
+    def _set_threshold_value(self, value: int) -> None:
+        self.threshold_slider.value = value
+        self.threshold_field.value = str(value)
+        self.threshold_field.error = None
+
+    def _set_threshold_enabled(self, *, locked: bool = False) -> None:
+        disabled = locked or self.dither_control.selected[0] != "threshold"
+        self.threshold_slider.disabled = disabled
+        self.threshold_field.disabled = disabled
+
+    def _monochrome_edit_allowed(self) -> bool:
+        if self.active_task_id is None or self._can_edit_task(self.active_task_id):
+            return True
+        try:
+            job = self.queue.find(self.active_task_id)
+        except KeyError:
+            return False
+        self.dither_control.selected = [job.options.dither]
+        self.invert_switch.value = job.options.invert
+        self._set_threshold_value(job.options.threshold)
+        self._set_threshold_enabled(locked=True)
+        if self.page_index == 0:
+            self.page.update(
+                self.dither_control, self.threshold_slider, self.threshold_field, self.invert_switch
+            )
+        return False
+
     async def _on_dither_change(self, _):
-        self.threshold_slider.disabled = self.dither_control.selected[0] != "threshold"
-        self.page.update(self.dither_control, self.threshold_slider)
+        if not self._monochrome_edit_allowed():
+            return
+        self._set_threshold_value(round(float(self.threshold_slider.value)))
+        self._set_threshold_enabled()
+        if self.page_index == 0:
+            self.page.update(self.dither_control, self.threshold_slider, self.threshold_field)
         if self._save_active_task_options():
             self._refresh_queue_view()
         await self._rerender_current_preview()
 
+    async def _on_threshold_input_change(self, _):
+        if not self._monochrome_edit_allowed():
+            return
+        if self.dither_control.selected[0] != "threshold":
+            self._set_threshold_value(round(float(self.threshold_slider.value)))
+            if self.page_index == 0:
+                self.page.update(self.threshold_field)
+            return
+        try:
+            value = int(self.threshold_field.value)
+            error = None if 0 <= value <= 255 else "请输入 0–255"
+        except (TypeError, ValueError):
+            error = "请输入整数"
+        self.threshold_field.error = error
+        if error is not None:
+            if self.page_index == 0:
+                self.page.update(self.threshold_field)
+            return
+        self.threshold_slider.value = value
+        await self._on_threshold_change(None)
+
     async def _on_threshold_change(self, _):
+        if not self._monochrome_edit_allowed():
+            return
+        if self.dither_control.selected[0] != "threshold":
+            self._set_threshold_value(int(self.threshold_field.value))
+            if self.page_index == 0:
+                self.page.update(self.threshold_slider)
+            return
+        self._set_threshold_value(round(float(self.threshold_slider.value)))
+        if self.page_index == 0:
+            self.page.update(self.threshold_slider, self.threshold_field)
         if self._save_active_task_options():
             self._refresh_queue_view()
         await self._rerender_current_preview(debounce=True)
 
     async def _on_invert_change(self, _):
+        if not self._monochrome_edit_allowed():
+            return
         if self._save_active_task_options():
             self._refresh_queue_view()
         await self._rerender_current_preview()
@@ -3312,9 +3437,11 @@ class ConverterApp:
         await self._load_first_preview()
 
     async def _rerender_current_preview(self, *, debounce: bool = False) -> None:
-        if not self.source_field.value or self.preview.index < 0:
+        if not self.source_field.value:
             return
         self.preview_render_revision += 1
+        if self.preview.index < 0:
+            return
         render_revision = self.preview_render_revision
         source_revision = self.preview_revision
         if debounce:

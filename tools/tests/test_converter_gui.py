@@ -411,6 +411,7 @@ class ConverterGuiTests(unittest.TestCase):
     def test_stale_preview_task_cannot_replace_current_status(self) -> None:
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.preview_revision = 1
+        app.preview_render_revision = 0
         app.preview_lock = asyncio.Lock()
         app.preview_label = SimpleNamespace(value="当前素材")
         app.page = SimpleNamespace(update=mock.Mock())
