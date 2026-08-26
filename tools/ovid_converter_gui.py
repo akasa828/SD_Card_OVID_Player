@@ -48,6 +48,7 @@ from media2ovid import (
     ConversionCancelled,
     ConversionOptions,
     ConversionProgress,
+    SourceInfo,
     convert_media,
     estimate_output_bytes,
     ffmpeg_version,
@@ -170,6 +171,40 @@ def timeline_frame_at_or_after(seconds: float, fps: int) -> int:
 def preview_frame_seconds(options: ConversionOptions, index: int) -> float:
     first = timeline_frame_at_or_after(options.trim_start_seconds, options.fps)
     return (first + options.skip_frames + max(0, index - 1)) / options.fps
+
+
+@dataclass(frozen=True)
+class PreviewAnchor:
+    source: Path
+    seconds: float
+    frame_index: int
+
+    @classmethod
+    def from_frame(cls, options: ConversionOptions, index: int) -> PreviewAnchor:
+        frame = timeline_frame_at_or_after(options.trim_start_seconds, options.fps)
+        frame += options.skip_frames + max(0, index - 1)
+        return cls(options.source, frame / options.fps, frame)
+
+
+def preview_options_at_anchor(
+    options: ConversionOptions, info: SourceInfo, anchor: PreviewAnchor | None,
+) -> ConversionOptions:
+    if anchor is None or anchor.source != options.source or info.kind == "image":
+        return options
+    first = timeline_frame_at_or_after(options.trim_start_seconds, options.fps) + options.skip_frames
+    selected = (
+        anchor.frame_index if info.kind == "directory"
+        else timeline_frame_at_or_after(anchor.seconds, options.fps)
+    )
+    count = info.frame_count
+    if count is None and info.duration_seconds is not None:
+        count = timeline_frame_at_or_after(info.duration_seconds, options.fps)
+    selected = max(first, selected)
+    if count is not None:
+        if count <= 0:
+            raise ValueError("裁剪或跳帧后没有可预览的画面")
+        selected = min(selected, first + count - 1)
+    return replace(options, trim_start_seconds=selected / options.fps, skip_frames=0)
 
 
 def parse_timestamp(text: str) -> float:
@@ -967,6 +1002,7 @@ class ConverterApp:
             height=260,
         )
         self.preview_snapshot: PreviewSnapshot | None = None
+        self.preview_anchor: PreviewAnchor | None = None
         self.pixel_inspector: PixelInspector | None = None
         self.preview_view_mode = ft.SegmentedButton(
             segments=[
@@ -2178,6 +2214,7 @@ class ConverterApp:
         self.output_field.value = ""
         self.preview_play_button.icon = ft.Icons.PLAY_ARROW
         self.preview_snapshot = None
+        self.preview_anchor = None
         self.inspect_preview_button.disabled = True
         self.original_preview_image.src = self._empty_preview()
         self.preview_image.src = self._empty_preview()
@@ -2427,6 +2464,7 @@ class ConverterApp:
         self.preview_revision += 1
         self.preview_play_button.icon = ft.Icons.PLAY_ARROW
         self.preview_snapshot = None
+        self.preview_anchor = None
         self.inspect_preview_button.disabled = True
         self.source_info = None
         self.source_info_key = None
@@ -2724,10 +2762,13 @@ class ConverterApp:
                 await asyncio.to_thread(self.preview.close)
 
     async def _refresh_preview(self, _=None):
+        anchor = self.preview_anchor
         self.preview_revision += 1
-        await self._load_first_preview()
+        await self._load_first_preview(anchor=anchor)
 
-    async def _load_first_preview(self, *, show_errors: bool = True):
+    async def _load_first_preview(
+        self, *, show_errors: bool = True, anchor: PreviewAnchor | None = None,
+    ):
         self.preview_playing = False
         self.preview_playback_revision += 1
         self.preview_render_revision += 1
@@ -2736,9 +2777,19 @@ class ConverterApp:
             self.page.update(self.preview_play_button)
         revision = self.preview_revision
         render_revision = self.preview_render_revision
+        reload_hint = asyncio.create_task(self._show_seek_hint_after(
+            revision, message="正在更新预览…" if anchor is not None else "正在载入预览…",
+        ))
         try:
             options = self._options(require_output=False)
-            first_probe = self.source_info is None
+            previous_info = self.source_info
+            if (
+                previous_info is not None
+                and options.trim_end_seconds == self.trim_slider.max
+            ):
+                with contextlib.suppress(KeyError):
+                    if self.queue.find(self.active_task_id).options.trim_end_seconds is None:
+                        options = replace(options, trim_end_seconds=None)
             async with self.preview_lock:
                 if revision != self.preview_revision:
                     return
@@ -2748,7 +2799,13 @@ class ConverterApp:
                 info = await self._source_info_for_options(options)
                 if revision != self.preview_revision:
                     return
-                await asyncio.to_thread(self.preview.reset, options, info)
+                decode_options = preview_options_at_anchor(options, info, anchor)
+                decode_info = info
+                if decode_options != options:
+                    decode_info = await self._source_info_for_options(decode_options)
+                    if revision != self.preview_revision:
+                        return
+                await asyncio.to_thread(self.preview.reset, decode_options, decode_info)
                 if revision != self.preview_revision:
                     return
                 frame = await asyncio.to_thread(self.preview.next_frame)
@@ -2757,14 +2814,22 @@ class ConverterApp:
                 )
             if revision != self.preview_revision:
                 return
-            if first_probe:
+            if previous_info is not self.source_info:
+                if previous_info is not None:
+                    self.pending_trim_range = (options.trim_start_seconds, options.trim_end_seconds)
                 self._configure_trim_timeline(self.source_info)
             total = info.frame_count if info.frame_count is not None else "?"
             estimate = estimate_output_bytes(options, info)
+            offset = (
+                timeline_frame_at_or_after(decode_options.trim_start_seconds, options.fps)
+                + decode_options.skip_frames
+                - timeline_frame_at_or_after(options.trim_start_seconds, options.fps)
+                - options.skip_frames
+            )
             self._set_preview_frame(
                 original,
                 data,
-                f"第 {index}/{total} 帧 · 预计 {human_size(estimate)}",
+                f"第 {offset + index}/{total} 帧 · 预计 {human_size(estimate)}",
                 index=index,
             )
         except Exception as exc:
@@ -2778,6 +2843,10 @@ class ConverterApp:
             self._set_preview_frame(empty, empty, "预览不可用，请检查素材与参数")
             if show_errors:
                 self._show_error("无法预览素材", exc)
+        finally:
+            reload_hint.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reload_hint
 
     async def _preview_first(self, _):
         self.preview_revision += 1
@@ -2897,6 +2966,10 @@ class ConverterApp:
         self.preview_label.value = label
         controls = [*self._visible_preview_images(), self.preview_label]
         options = self.preview.options
+        self.preview_anchor = (
+            PreviewAnchor.from_frame(options, index)
+            if index is not None and options is not None else None
+        )
         self.preview_snapshot = (
             PreviewSnapshot(data, options.width, options.height, f"{options.source.name} · {label}")
             if index is not None and options is not None else None
@@ -3029,10 +3102,10 @@ class ConverterApp:
                     self.resume_preview_after_drag = False
                     await self._toggle_preview_playback(None)
 
-    async def _show_seek_hint_after(self, revision: int) -> None:
+    async def _show_seek_hint_after(self, revision: int, *, message: str = "正在定位…") -> None:
         await asyncio.sleep(0.15)
         if revision == self.preview_revision:
-            self.preview_label.value = "正在定位…"
+            self.preview_label.value = message
             if self.page_index == 0:
                 self.page.update(self.preview_label)
 
@@ -3837,11 +3910,15 @@ class ConverterApp:
             return
         if not self._validate_editor_numbers():
             return
+        anchor = self.preview_anchor
         self.preview_revision += 1
         revision = self.preview_revision
         self.preview_playing = False
         self.preview_playback_revision += 1
         self.preview_render_revision += 1
+        self.preview_play_button.icon = ft.Icons.PLAY_ARROW
+        if self.page_index == 0:
+            self.page.update(self.preview_play_button)
         await asyncio.sleep(0.12)
         if revision != self.preview_revision:
             return
@@ -3855,7 +3932,7 @@ class ConverterApp:
             return
         if self._save_active_task_options():
             self._refresh_queue_view()
-        await self._load_first_preview()
+        await self._load_first_preview(anchor=anchor)
 
     async def _rerender_current_preview(self, *, debounce: bool = False) -> None:
         if not self.source_field.value:

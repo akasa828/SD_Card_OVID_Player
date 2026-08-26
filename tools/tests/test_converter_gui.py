@@ -333,7 +333,7 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertFalse(app.preview_playing)
         self.assertEqual(2, app.preview_revision)
         options.validate.assert_called_once_with()
-        app._load_first_preview.assert_awaited_once_with()
+        app._load_first_preview.assert_awaited_once_with(anchor=None)
 
     def test_preview_fps_validation(self) -> None:
         for value in (1, "15", 30, "120"):
