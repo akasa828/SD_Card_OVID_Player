@@ -2719,7 +2719,11 @@ class ConverterApp:
             return
         if not self._save_editor_before_action():
             return
-        jobs = self.queue.freeze_selected()
+        try:
+            jobs = self.queue.freeze_selected()
+        except (OSError, ValueError) as exc:
+            self._show_error("无法准备输出文件", exc)
+            return
         if not jobs:
             self._show_error("无法开始转换", ValueError("请先添加并勾选至少一个任务"))
             return

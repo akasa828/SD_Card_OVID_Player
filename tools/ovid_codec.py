@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import struct
+import tempfile
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -200,21 +201,28 @@ class OvidReader:
         for index in range(header.frame_count):
             yield self.read_frame(index)
 
-    def validate(self) -> OvidValidation:
+    def validate(self, *, cancelled: Callable[[], bool] | None = None) -> OvidValidation:
         _, header = self._require_open()
         file_bytes = self.path.stat().st_size
         if file_bytes != header.expected_file_bytes:
             raise OvidFormatError(
                 f"文件长度 {file_bytes} B，应为 {header.expected_file_bytes} B"
             )
-        bad_frames = tuple(frame.index for frame in self.iter_frames() if not frame.crc_valid)
-        return OvidValidation(self.path, header, file_bytes, bad_frames)
+        bad_frames = []
+        for frame in self.iter_frames():
+            if cancelled is not None and cancelled():
+                raise OvidWriteCancelled("转换已取消")
+            if not frame.crc_valid:
+                bad_frames.append(frame.index)
+        return OvidValidation(self.path, header, file_bytes, tuple(bad_frames))
 
 
-def validate_ovid(path: Path | str) -> OvidValidation:
+def validate_ovid(
+    path: Path | str, *, cancelled: Callable[[], bool] | None = None
+) -> OvidValidation:
     """Validate metadata, length, and all available frame CRC values."""
     with OvidReader(path) as reader:
-        return reader.validate()
+        return reader.validate(cancelled=cancelled)
 
 
 def write_ovid(
@@ -260,6 +268,16 @@ def write_ovid(
     return OvidSummary(output, width, height, count, fps, expected, size, version)
 
 
+def _publish_ovid(temporary: Path, output: Path, *, force: bool) -> None:
+    if force:
+        os.replace(temporary, output)
+    elif os.name == "nt":
+        os.rename(temporary, output)
+    else:
+        # POSIX rename replaces an existing file; linking publishes without clobbering.
+        os.link(temporary, output)
+
+
 def write_ovid_atomic(
     out_path: Path | str,
     frames: Iterable[bytes],
@@ -278,8 +296,10 @@ def write_ovid_atomic(
     if output.exists() and not force:
         raise FileExistsError(f"输出文件已存在：{output}")
 
-    temporary = output.with_name(output.name + ".part")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".ovid-", suffix=".part", dir=output.parent)
+    temporary = Path(temporary_name)
     try:
+        os.close(descriptor)
         summary = write_ovid(
             temporary,
             frames,
@@ -290,11 +310,13 @@ def write_ovid_atomic(
             on_frame=on_frame,
             cancelled=cancelled,
         )
-        validation = validate_ovid(temporary)
+        validation = validate_ovid(temporary, cancelled=cancelled)
         if validation.bad_frames:
             bad = ", ".join(str(index + 1) for index in validation.bad_frames[:8])
             raise OvidFormatError(f"写出后校验失败，CRC 错误帧：{bad}")
-        os.replace(temporary, output)
+        if cancelled is not None and cancelled():
+            raise OvidWriteCancelled("转换已取消")
+        _publish_ovid(temporary, output, force=force)
         return OvidSummary(
             output,
             summary.width,
@@ -305,9 +327,8 @@ def write_ovid_atomic(
             summary.file_bytes,
             summary.version,
         )
-    except BaseException:
+    finally:
         try:
             temporary.unlink(missing_ok=True)
         except OSError:
             pass
-        raise

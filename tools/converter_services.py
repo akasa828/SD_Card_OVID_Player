@@ -322,9 +322,13 @@ def check_compatibility(
     )
 
 
-def unique_output_path(path: Path, *, reserved: set[Path] | None = None) -> Path:
+def unique_output_path(
+    path: Path, *, reserved: set[Path] | None = None, allow_existing: bool = False
+) -> Path:
     reserved = reserved or set()
-    if not path.exists() and path.resolve() not in reserved:
+    if path.resolve() not in reserved and (
+        not path.exists() or (allow_existing and not path.is_dir())
+    ):
         return path
     for index in range(2, 10000):
         candidate = path.with_name(f"{path.stem}_{index}{path.suffix}")
@@ -401,13 +405,13 @@ class ConversionQueue:
         *,
         target_profile: str = "stm32f103-128x64",
     ) -> QueueJob:
-        if not options.force:
-            with self._lock:
-                reserved = {job.options.output.resolve() for job in self._jobs}
-            output = unique_output_path(options.output, reserved=reserved)
-            options = replace(options, output=output)
-        job = QueueJob(options, target_profile=target_profile)
         with self._lock:
+            reserved = {job.options.output.resolve() for job in self._jobs}
+            output = unique_output_path(
+                options.output, reserved=reserved, allow_existing=options.force
+            )
+            options = replace(options, output=output)
+            job = QueueJob(options, target_profile=target_profile)
             self._jobs.append(job)
         return job
 
@@ -447,6 +451,8 @@ class ConversionQueue:
     def retry(self, job_id: str) -> QueueJob:
         with self._lock:
             job = self.find(job_id)
+            if job.frozen or job.state == "running":
+                raise ValueError("本轮任务尚未结束，不能重试")
             job.state = "queued"
             job.progress = None
             job.summary = None
@@ -507,14 +513,17 @@ class ConversionQueue:
                 for job in self._jobs
                 if job.id not in selected_ids
             }
+            prepared = []
             for job in jobs:
-                if not job.options.force:
-                    output = unique_output_path(
-                        job.options.output,
-                        reserved=reserved_outputs,
-                    )
-                    job.options = replace(job.options, output=output)
-                    reserved_outputs.add(output.resolve())
+                output = unique_output_path(
+                    job.options.output,
+                    reserved=reserved_outputs,
+                    allow_existing=job.options.force,
+                )
+                prepared.append((job, replace(job.options, output=output)))
+                reserved_outputs.add(output.resolve())
+            for job, options in prepared:
+                job.options = options
                 if job.state in {"completed", "failed", "cancelled"}:
                     job.state = "queued"
                     job.progress = None
@@ -532,13 +541,16 @@ class ConversionQueue:
     def remove(self, job_id: str) -> None:
         with self._lock:
             job = self.find(job_id)
-            if job.state == "running":
+            if job.state == "running" or job.frozen:
                 raise ValueError("正在转换的任务不能直接移除，请先取消")
             self._jobs.remove(job)
 
     def clear_completed(self) -> None:
         with self._lock:
-            self._jobs[:] = [job for job in self._jobs if job.state not in {"completed", "cancelled"}]
+            self._jobs[:] = [
+                job for job in self._jobs
+                if job.frozen or job.state not in {"completed", "cancelled"}
+            ]
 
 
 class QueueSessionStore:

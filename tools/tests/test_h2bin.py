@@ -96,7 +96,6 @@ class H2BinTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "safe.BIN"
             output.write_bytes(b"previous output")
-            temporary = output.with_name(output.name + ".part")
             with mock.patch.object(
                 ovid_codec,
                 "validate_ovid",
@@ -116,7 +115,7 @@ class H2BinTests(unittest.TestCase):
                     )
 
             self.assertEqual(b"previous output", output.read_bytes())
-            self.assertFalse(temporary.exists())
+            self.assertEqual([output], list(output.parent.iterdir()))
 
     def test_header_arrays_are_read_without_loading_the_whole_file(self):
         source_text = """
