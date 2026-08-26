@@ -277,13 +277,11 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertNotIn("把素材直接转换成 OLED 可以播放的 OVID 文件", source)
 
     def test_preview_image_keeps_the_previous_frame_while_decoding(self) -> None:
-        source = GUI_SOURCE.read_text(encoding="utf-8")
-        self.assertIn("gapless_playback=True", source)
-        self.assertIn(
-            "controls = [self.original_preview_image, self.preview_image, self.preview_label]",
-            source,
-        )
-        self.assertIn("self.page.update(*controls)", source)
+        app = self.make_editor()
+        for image in (app.original_preview_image, app.preview_image, app.player_image):
+            self.assertTrue(image.gapless_playback)
+        self.assertEqual(converter_gui.ft.FilterQuality.NONE, app.preview_image.filter_quality)
+        self.assertFalse(app.preview_image.anti_alias)
 
     def test_threshold_has_live_preview_and_help_text(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")

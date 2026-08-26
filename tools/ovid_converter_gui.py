@@ -26,6 +26,7 @@ except ImportError:  # Local lightweight builds deliberately omit the Flutter ex
 
 from converter_version import DISPLAY_NAME, VERSION
 from converter_feedback import ErrorDetailsDialog, ErrorReport
+from converter_preview_ui import PixelInspector, PreviewSnapshot
 from converter_services import (
     BUILTIN_PRESETS,
     TARGET_PROFILES,
@@ -955,6 +956,23 @@ class ConverterApp:
             anti_alias=False,
             height=260,
         )
+        self.preview_snapshot: PreviewSnapshot | None = None
+        self.pixel_inspector: PixelInspector | None = None
+        self.preview_view_mode = ft.SegmentedButton(
+            segments=[
+                ft.Segment(value="compare", label=ft.Text("对比")),
+                ft.Segment(value="oled", label=ft.Text("仅 OLED")),
+                ft.Segment(value="source", label=ft.Text("仅原图")),
+            ],
+            selected=["compare"],
+            on_change=self._on_preview_view_mode,
+        )
+        self.inspect_preview_button = ft.TextButton(
+            "查看 OLED 帧", icon=ft.Icons.ZOOM_IN,
+            tooltip="固定当前帧，按整数倍查看像素；不改变转换参数",
+            disabled=True,
+            on_click=self._inspect_preview_frame,
+        )
         self.preview_label = ft.Text("尚未载入素材", color=ft.Colors.ON_SURFACE_VARIANT)
         self.preview_play_button = ft.IconButton(
             icon=ft.Icons.PLAY_ARROW,
@@ -1164,42 +1182,36 @@ class ConverterApp:
             col=12,
             key="source-card",
         )
+        self.original_preview_panel = ft.Column(
+            [
+                ft.Text("原始素材", weight=ft.FontWeight.W_500),
+                ft.Container(
+                    content=self.original_preview_image, bgcolor=ft.Colors.BLACK,
+                    border_radius=16, padding=10, alignment=ft.Alignment.CENTER,
+                ),
+            ],
+            expand=True,
+        )
+        self.oled_preview_panel = ft.Column(
+            [
+                ft.Text("OLED 输出", weight=ft.FontWeight.W_500),
+                ft.Container(
+                    content=self.preview_image, bgcolor=ft.Colors.BLACK,
+                    border_radius=16, padding=10, alignment=ft.Alignment.CENTER,
+                ),
+            ],
+            expand=True,
+        )
+        self.preview_panels = ft.Row(
+            [self.original_preview_panel, self.oled_preview_panel],
+            spacing=12, vertical_alignment=ft.CrossAxisAlignment.START,
+        )
         preview_card = self._card(
-            "画面对比",
+            "画面预览",
             ft.Icons.IMAGE,
             [
-                ft.Row(
-                    [
-                        ft.Column(
-                            [
-                                ft.Text("原始素材", weight=ft.FontWeight.W_500),
-                                ft.Container(
-                                    content=self.original_preview_image,
-                                    bgcolor=ft.Colors.BLACK,
-                                    border_radius=16,
-                                    padding=10,
-                                    alignment=ft.Alignment.CENTER,
-                                ),
-                            ],
-                            expand=True,
-                        ),
-                        ft.Column(
-                            [
-                                ft.Text("OLED 输出", weight=ft.FontWeight.W_500),
-                                ft.Container(
-                                    content=self.preview_image,
-                                    bgcolor=ft.Colors.BLACK,
-                                    border_radius=16,
-                                    padding=10,
-                                    alignment=ft.Alignment.CENTER,
-                                ),
-                            ],
-                            expand=True,
-                        ),
-                    ],
-                    spacing=12,
-                    vertical_alignment=ft.CrossAxisAlignment.START,
-                ),
+                ft.Row([self.preview_view_mode, self.inspect_preview_button], wrap=True),
+                self.preview_panels,
                 ft.Row(
                     [
                         ft.IconButton(icon=ft.Icons.SKIP_PREVIOUS, tooltip="回到首帧", on_click=self._preview_first),
@@ -2155,6 +2167,8 @@ class ConverterApp:
         self.source_field.value = ""
         self.output_field.value = ""
         self.preview_play_button.icon = ft.Icons.PLAY_ARROW
+        self.preview_snapshot = None
+        self.inspect_preview_button.disabled = True
         self.original_preview_image.src = self._empty_preview()
         self.preview_image.src = self._empty_preview()
         self.preview_label.value = "尚未载入素材"
@@ -2171,8 +2185,8 @@ class ConverterApp:
             self.source_field,
             self.output_field,
             self.preview_play_button,
-            self.original_preview_image,
-            self.preview_image,
+            *self._visible_preview_images(),
+            self.inspect_preview_button,
             self.preview_label,
             self.preview_timeline,
             self.preview_time_label,
@@ -2402,6 +2416,8 @@ class ConverterApp:
         self.preview_render_revision += 1
         self.preview_revision += 1
         self.preview_play_button.icon = ft.Icons.PLAY_ARROW
+        self.preview_snapshot = None
+        self.inspect_preview_button.disabled = True
         self.source_info = None
         self.source_info_key = None
         self.pending_trim_range = (trim_start, trim_end)
@@ -2768,6 +2784,40 @@ class ConverterApp:
             )
         return frame
 
+    def _visible_preview_images(self) -> list[ft.Image]:
+        panels = (
+            (self.original_preview_panel, self.original_preview_image),
+            (self.oled_preview_panel, self.preview_image),
+        )
+        return [
+            image for panel, image in panels
+            if any(visible is panel for visible in self.preview_panels.controls)
+        ]
+
+    def _on_preview_view_mode(self, _) -> None:
+        selected = self.preview_view_mode.selected
+        mode = selected[0] if selected else "compare"
+        if mode not in {"compare", "oled", "source"}:
+            mode = "compare"
+        self.preview_view_mode.selected = [mode]
+        panels = {
+            "compare": [self.original_preview_panel, self.oled_preview_panel],
+            "oled": [self.oled_preview_panel],
+            "source": [self.original_preview_panel],
+        }
+        self.preview_panels.controls = panels[mode]
+        if self.page_index == 0:
+            self.page.update(self.preview_panels, self.preview_view_mode)
+
+    def _inspect_preview_frame(self, _) -> None:
+        if self.pixel_inspector is not None and self.pixel_inspector.is_open:
+            return
+        if self.preview_snapshot is None:
+            self._show_notice("请先载入一帧 OLED 预览。")
+            return
+        self.pixel_inspector = PixelInspector(self.page, self.preview_snapshot)
+        self.pixel_inspector.show()
+
     def _set_preview_frame(
         self,
         original: bytes,
@@ -2779,7 +2829,16 @@ class ConverterApp:
         self.original_preview_image.src = original
         self.preview_image.src = data
         self.preview_label.value = label
-        controls = [self.original_preview_image, self.preview_image, self.preview_label]
+        controls = [*self._visible_preview_images(), self.preview_label]
+        options = self.preview.options
+        self.preview_snapshot = (
+            PreviewSnapshot(data, options.width, options.height, f"{options.source.name} · {label}")
+            if index is not None and options is not None else None
+        )
+        inspect_disabled = self.preview_snapshot is None
+        if self.inspect_preview_button.disabled != inspect_disabled:
+            self.inspect_preview_button.disabled = inspect_disabled
+            controls.append(self.inspect_preview_button)
         if index is not None and self.preview.options is not None and not self.preview_timeline_dragging:
             position = preview_frame_seconds(self.preview.options, index)
             if self.preview_timeline.visible:
@@ -3939,7 +3998,7 @@ class ConverterApp:
         for control in (self.original_preview_image, self.preview_image):
             if control.height != comparison_height:
                 control.height = comparison_height
-                if self.page_index == 0:
+                if self.page_index == 0 and control in self._visible_preview_images():
                     resized_controls.append(control)
         if self.player_image.height != player_height:
             self.player_image.height = player_height
