@@ -610,8 +610,8 @@ class ConverterApp:
 
         self._build_controls()
         self._configure_page()
-        self._refresh_queue_view()
         self._show_page(0)
+        self._refresh_queue_view()
         if restored_active_task is not None:
             asyncio.create_task(self._activate_task(restored_active_task))
 
@@ -656,6 +656,14 @@ class ConverterApp:
         self._on_resize()
 
     def _build_controls(self) -> None:
+        self.editor_task_name = ft.Text(
+            "尚未选择任务", weight=ft.FontWeight.W_500,
+            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+        )
+        self.editor_task_hint = ft.Text(
+            "添加素材后，在这里单独调整它的参数。",
+            size=12, color=ft.Colors.ON_SURFACE_VARIANT,
+        )
         self.source_field = ft.TextField(label="输入素材", read_only=True, expand=True)
         self.output_field = ft.TextField(label="输出 OVID .BIN", read_only=True, expand=True)
         self.width_field = self._number_field(
@@ -774,6 +782,14 @@ class ConverterApp:
             on_change_end=self._on_trim_change,
         )
         self.trim_label = ft.Text("单张图片无需裁剪", color=ft.Colors.ON_SURFACE_VARIANT)
+        self.trim_controls = ft.Column(
+            [
+                ft.Text("导出范围 · 仅此区间写入 BIN", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                self.trim_slider,
+                self.trim_label,
+            ],
+            spacing=8,
+        )
         self.preview_timeline = ft.Slider(
             min=0,
             max=1,
@@ -836,8 +852,9 @@ class ConverterApp:
             "清理已完成", on_click=self._clear_completed_jobs
         )
         self.apply_selected_button = ft.OutlinedButton(
-            "应用到已勾选项",
+            "复制参数到勾选任务",
             icon=ft.Icons.COPY_ALL,
+            tooltip="保留各任务的素材、输出路径和裁剪范围",
             on_click=self._apply_active_options_to_selected,
         )
         self.queue_empty_state = ft.Container(
@@ -996,10 +1013,13 @@ class ConverterApp:
             ],
             wrap=True,
         )
+        self.output_button = ft.IconButton(
+            icon=ft.Icons.SAVE, tooltip="选择输出位置", on_click=self._choose_output
+        )
         output_actions = ft.Row(
             [
                 self.output_field,
-                ft.IconButton(icon=ft.Icons.SAVE, tooltip="选择输出位置", on_click=self._choose_output),
+                self.output_button,
             ]
         )
         input_card = self._card(
@@ -1018,7 +1038,7 @@ class ConverterApp:
             "画面对比",
             ft.Icons.IMAGE,
             [
-                ft.ResponsiveRow(
+                ft.Row(
                     [
                         ft.Column(
                             [
@@ -1031,7 +1051,7 @@ class ConverterApp:
                                     alignment=ft.Alignment.CENTER,
                                 ),
                             ],
-                            col={"xs": 12, "md": 6},
+                            expand=True,
                         ),
                         ft.Column(
                             [
@@ -1044,11 +1064,11 @@ class ConverterApp:
                                     alignment=ft.Alignment.CENTER,
                                 ),
                             ],
-                            col={"xs": 12, "md": 6},
+                            expand=True,
                         ),
                     ],
                     spacing=12,
-                    run_spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
                 ),
                 ft.Row(
                     [
@@ -1061,10 +1081,10 @@ class ConverterApp:
                     alignment=ft.MainAxisAlignment.CENTER,
                     wrap=True,
                 ),
+                ft.Text("预览位置", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
                 self.preview_timeline,
                 self.preview_time_label,
-                self.trim_slider,
-                self.trim_label,
+                self.trim_controls,
             ],
             col=12,
             key="preview-card",
@@ -1073,6 +1093,8 @@ class ConverterApp:
             "转换参数",
             ft.Icons.TUNE,
             [
+                self.editor_task_name,
+                self.editor_task_hint,
                 ft.ResponsiveRow(
                     [
                         self.preset_dropdown,
@@ -1211,10 +1233,18 @@ class ConverterApp:
             ],
             col=12,
         )
+        self.preview_card = preview_card
+        self.parameter_card = parameter_card
+        self.editor_row = ft.ResponsiveRow(
+            [preview_card, parameter_card], spacing=16, run_spacing=16,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+        )
         self.convert_scroll = ft.Column(
             [
                 ft.Text("无需 IrfanView、Img2Lcd 或中间 .c/.h 文件。", color=ft.Colors.ON_SURFACE_VARIANT),
-                ft.ResponsiveRow([input_card, preview_card, parameter_card, action_card], spacing=16, run_spacing=16),
+                input_card,
+                self.editor_row,
+                action_card,
             ],
             scroll=ft.ScrollMode.AUTO,
             expand=True,
@@ -1671,6 +1701,8 @@ class ConverterApp:
             f"{self._task_time_range(job.options)}"
         )
         state_text = self._queue_state_text(job)
+        if job.id == self.active_task_id:
+            state_text = f"正在编辑 · {state_text}"
         progress = job.progress.ratio if job.progress is not None else 0
         action_signature = (
             job.state == "completed" and job.summary is not None,
@@ -1766,6 +1798,7 @@ class ConverterApp:
             or active.frozen
             or not applicable
         )
+        editor_controls = self._update_editor_context(active, len(applicable))
         if busy:
             current = getattr(self, "batch_current_name", "")
             self.task_action_status.value = f"正在转换{f'：{current}' if current else ''}"
@@ -1784,13 +1817,34 @@ class ConverterApp:
             self.clear_completed_button,
             self.apply_selected_button,
             self.task_action_status,
+            *editor_controls,
         ]
         if structure_changed:
             controls_to_update.insert(0, self.queue_list)
         else:
             controls_to_update[0:0] = changed_rows
-        self.page.update(*controls_to_update)
+        if getattr(self, "page_index", 0) == 0:
+            self.page.update(*controls_to_update)
         self._schedule_session_save()
+
+    def _update_editor_context(self, active: QueueJob | None, other_count: int) -> list[ft.Control]:
+        self.apply_selected_button.content = (
+            f"复制参数到另外 {other_count} 个任务" if other_count else "复制参数到勾选任务"
+        )
+        if not hasattr(self, "editor_task_name"):
+            return []
+        self.editor_task_name.value = (
+            f"正在编辑：{active.options.source.name}" if active else "尚未选择任务"
+        )
+        self.editor_task_name.tooltip = str(active.options.source) if active else None
+        if active is None:
+            hint = "添加素材后，在这里单独调整它的参数。"
+        elif active.frozen or active.state == "running":
+            hint = "此任务已加入本轮转换，参数暂时只读。"
+        else:
+            hint = "修改仅应用于此任务；勾选框只决定哪些任务参与转换。"
+        self.editor_task_hint.value = hint
+        return [self.editor_task_name, self.editor_task_hint]
 
     def _schedule_session_save(self) -> None:
         if not hasattr(self, "session_store"):
@@ -2277,12 +2331,18 @@ class ConverterApp:
         for control in controls:
             control.disabled = locked
         self.threshold_slider.disabled = locked or self.dither_control.selected[0] != "threshold"
+        self.parameter_card.disabled = locked
+        self.trim_controls.disabled = locked
+        self.output_button.disabled = locked
+        if self.page_index == 0:
+            self.page.update(self.parameter_card, self.trim_controls, self.output_button)
 
     def _apply_active_options_to_selected(self, _) -> None:
         if not self.active_task_id:
             self._show_notice("请先选择一个任务")
             return
-        self._save_active_task_options()
+        if not self._save_editor_before_action():
+            return
         try:
             active = self.queue.find(self.active_task_id)
         except KeyError:
@@ -3244,14 +3304,33 @@ class ConverterApp:
         for control in (self.original_preview_image, self.preview_image):
             if control.height != comparison_height:
                 control.height = comparison_height
-                resized_controls.append(control)
+                if self.page_index == 0:
+                    resized_controls.append(control)
         if self.player_image.height != player_height:
             self.player_image.height = player_height
-            resized_controls.append(self.player_image)
+            if self.page_index == 1:
+                resized_controls.append(self.player_image)
+        editor_changed = self._resize_editor_panels(width, height, compact)
+        if editor_changed and self.page_index == 0:
+            resized_controls = [self.editor_row]
         if navigation_changed:
             self.page.update()
         elif resized_controls:
             self.page.update(*resized_controls)
+
+    def _resize_editor_panels(self, width: float, height: float, compact: bool) -> bool:
+        content_width = width - 40 - (1 if compact else 89)
+        split = content_width >= 960
+        columns = 6 if split else 12
+        panel_height = max(480, min(720, height - 180)) if split else None
+        changed = False
+        for card in (self.preview_card, self.parameter_card):
+            if card.col != columns or card.height != panel_height:
+                card.col = columns
+                card.height = panel_height
+                card.content.content.scroll = ft.ScrollMode.AUTO if split else None
+                changed = True
+        return changed
 
     def _show_error(self, title: str, error: Exception) -> None:
         self.page.show_dialog(

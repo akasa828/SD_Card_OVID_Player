@@ -31,6 +31,7 @@ class ConverterGuiTests(unittest.TestCase):
         app.page = SimpleNamespace(update=mock.Mock())
         app.queue = converter_gui.ConversionQueue()
         app.active_task_id = None
+        app.page_index = 0
         app._build_controls()
         return app
 
@@ -107,7 +108,7 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertEqual((300, 520), converter_gui.responsive_preview_heights(1200))
 
     def test_repeated_resize_updates_only_changed_preview_controls(self) -> None:
-        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app = self.make_editor()
         app.compact_layout = None
         app.navigation_rail = converter_gui.ft.NavigationRail(destinations=[])
         app.navigation_bar = converter_gui.ft.NavigationBar(destinations=[])
@@ -115,9 +116,9 @@ class ConverterGuiTests(unittest.TestCase):
         app.preview_image = converter_gui.ft.Image(src=b"", height=260)
         app.player_image = converter_gui.ft.Image(src=b"", height=360)
         app.page = SimpleNamespace(
-            width=1000,
+            width=1120,
             height=760,
-            window=SimpleNamespace(width=1000, height=760),
+            window=SimpleNamespace(width=1120, height=760),
             navigation_bar=None,
             update=mock.Mock(),
         )
@@ -131,17 +132,72 @@ class ConverterGuiTests(unittest.TestCase):
         app.page.height = 700
         app._on_resize()
         self.assertEqual(
-            (
-                app.original_preview_image,
-                app.preview_image,
-                app.player_image,
-            ),
+            (app.editor_row,),
             app.page.update.call_args.args,
         )
 
         app.page.update.reset_mock()
         app._on_resize()
         app.page.update.assert_not_called()
+
+        app.page_index = 2
+        app.page.height = 800
+        app._on_resize()
+        app.page.update.assert_not_called()
+
+    def test_editor_panels_split_with_bounded_scroll_and_stack_on_small_windows(self):
+        app = self.make_editor()
+        self.assertTrue(app._resize_editor_panels(1120, 760, False))
+        for card in (app.preview_card, app.parameter_card):
+            self.assertEqual(6, card.col)
+            self.assertEqual(580, card.height)
+            self.assertEqual(converter_gui.ft.ScrollMode.AUTO, card.content.content.scroll)
+        self.assertFalse(app._resize_editor_panels(1120, 760, False))
+        self.assertTrue(app._resize_editor_panels(700, 600, True))
+        for card in (app.preview_card, app.parameter_card):
+            self.assertEqual(12, card.col)
+            self.assertIsNone(card.height)
+            self.assertIsNone(card.content.content.scroll)
+
+    def test_editor_header_distinguishes_active_task_from_checked_tasks(self):
+        app = self.make_editor()
+        job = app.queue.add(converter_gui.ConversionOptions(Path("sample.mp4"), Path("sample.BIN")))
+        app.active_task_id = job.id
+        app._refresh_queue_view()
+        self.assertIn("sample.mp4", app.editor_task_name.value)
+        self.assertIn("修改仅应用于此任务", app.editor_task_hint.value)
+        app.queue.add(converter_gui.ConversionOptions(Path("other.mp4"), Path("other.BIN")))
+        app._refresh_queue_view()
+        self.assertEqual("复制参数到另外 1 个任务", app.apply_selected_button.content)
+        app.queue.freeze_selected()
+        app._refresh_queue_view()
+        self.assertIn("只读", app.editor_task_hint.value)
+        self.assertTrue(app.apply_selected_button.disabled)
+
+    def test_background_task_refresh_does_not_patch_unmounted_converter(self):
+        app = self.make_editor()
+        app.page_index = 2
+        app.queue.add(converter_gui.ConversionOptions(Path("clip.mp4"), Path("clip.BIN")))
+        app._refresh_queue_view()
+        app.page.update.assert_not_called()
+        self.assertIn("已勾选 1 项", app.queue_status.value)
+
+    def test_running_task_locks_all_editing_without_changing_preview_crop(self):
+        app = self.make_editor()
+        app.trim_slider.disabled = False
+        app.trim_slider.max = 10
+        app.trim_slider.start_value = 2
+        app.trim_slider.end_value = 8
+        app._set_editor_locked(True)
+        self.assertTrue(app.parameter_card.disabled)
+        self.assertTrue(app.trim_controls.disabled)
+        self.assertTrue(app.output_button.disabled)
+        options = app._options_for_source(Path("clip.mp4"), Path("clip.BIN"))
+        self.assertEqual((2, 8), (options.trim_start_seconds, options.trim_end_seconds))
+        app._set_editor_locked(False)
+        self.assertFalse(app.parameter_card.disabled)
+        self.assertFalse(app.trim_controls.disabled)
+        self.assertFalse(app.output_button.disabled)
 
     def test_batch_result_distinguishes_successes_and_failures(self) -> None:
         self.assertEqual("本轮完成：3/3 个任务", converter_gui.batch_result_text(3, 3))
@@ -522,7 +578,7 @@ class ConverterGuiTests(unittest.TestCase):
         source = GUI_SOURCE.read_text(encoding="utf-8")
         self.assertIn('"转换任务"', source)
         self.assertIn('"转换所选"', source)
-        self.assertIn('"应用到已勾选项"', source)
+        self.assertIn('"复制参数到勾选任务"', source)
         self.assertNotIn("def _build_queue_page", source)
         self.assertIn("allow_multiple=True", source)
         self.assertIn("self.session_store = QueueSessionStore()", source)
