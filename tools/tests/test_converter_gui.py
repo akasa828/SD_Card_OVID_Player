@@ -648,6 +648,17 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertIn('ft.ExpansionTile(\n                    title=ft.Text("更多设置"', source)
         self.assertIn('"跳帧、补边背景、目录读取和输出覆盖"', source)
 
+    def test_advanced_settings_use_one_responsive_grid(self) -> None:
+        app = self.make_editor()
+        expected_columns = {"xs": 12, "sm": 6}
+        self.assertEqual(expected_columns, app.recursive_option_cell.col)
+        self.assertEqual(expected_columns, app.force_option_cell.col)
+        self.assertEqual(expected_columns, app.task_worker_dropdown.col)
+        self.assertEqual(expected_columns, app.fast_video_option_cell.col)
+        self.assertIs(app.recursive_switch, app.recursive_option_cell.content)
+        self.assertIs(app.force_switch, app.force_option_cell.content)
+        self.assertIs(app.task_fast_video_switch, app.fast_video_option_cell.content)
+
     def test_task_rows_clip_long_names_and_errors(self) -> None:
         source = GUI_SOURCE.read_text(encoding="utf-8")
         self.assertIn("row.name.tooltip = str(job.options.source)", source)

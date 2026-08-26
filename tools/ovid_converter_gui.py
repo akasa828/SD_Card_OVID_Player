@@ -854,8 +854,18 @@ class ConverterApp:
         self.recursive_switch = ft.Switch(
             label="递归读取图片子目录", value=False, on_change=self._on_geometry_change
         )
+        self.recursive_option_cell = ft.Container(
+            content=self.recursive_switch,
+            col={"xs": 12, "sm": 6},
+            alignment=ft.Alignment.CENTER_LEFT,
+        )
         self.force_switch = ft.Switch(
             label="允许覆盖已有输出", value=False, on_change=self._on_task_option_change
+        )
+        self.force_option_cell = ft.Container(
+            content=self.force_switch,
+            col={"xs": 12, "sm": 6},
+            alignment=ft.Alignment.CENTER_LEFT,
         )
         self.task_worker_dropdown = ft.Dropdown(
             label="此任务的图像处理线程",
@@ -863,12 +873,18 @@ class ConverterApp:
             options=[ft.DropdownOption(key="0", text="自动")]
             + [ft.DropdownOption(key=str(value), text=str(value)) for value in range(1, 9)],
             on_select=self._on_task_option_change,
+            col={"xs": 12, "sm": 6},
         )
         self.task_fast_video_switch = ft.Switch(
             label="此任务使用快速视频模式",
             tooltip="转换时可能选取临界时间点的相邻帧，不改变桌面预览方式。",
             value=self.settings.fast_video,
             on_change=self._on_task_option_change,
+        )
+        self.fast_video_option_cell = ft.Container(
+            content=self.task_fast_video_switch,
+            col={"xs": 12, "sm": 6},
+            alignment=ft.Alignment.CENTER_LEFT,
         )
         self.target_dropdown = ft.Dropdown(
             label="设备屏幕（兼容性检查）",
@@ -1369,13 +1385,25 @@ class ConverterApp:
                             spacing=12,
                             run_spacing=12,
                         ),
-                        ft.Row([self.recursive_switch, self.force_switch], wrap=True),
-                        self.task_worker_dropdown,
-                        self.task_fast_video_switch,
-                        ft.OutlinedButton(
-                            "重新载入预览",
-                            icon=ft.Icons.REFRESH,
-                            on_click=self._refresh_preview,
+                        ft.ResponsiveRow(
+                            [self.recursive_option_cell, self.force_option_cell],
+                            spacing=12,
+                            run_spacing=8,
+                        ),
+                        ft.ResponsiveRow(
+                            [self.task_worker_dropdown, self.fast_video_option_cell],
+                            spacing=12,
+                            run_spacing=8,
+                        ),
+                        ft.Row(
+                            [
+                                ft.OutlinedButton(
+                                    "重新载入预览",
+                                    icon=ft.Icons.REFRESH,
+                                    on_click=self._refresh_preview,
+                                )
+                            ],
+                            alignment=ft.MainAxisAlignment.START,
                         ),
                     ],
                 ),
