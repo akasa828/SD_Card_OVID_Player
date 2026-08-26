@@ -563,7 +563,7 @@ class ConverterApp:
         restored_jobs, restored_active_task = self.session_store.load()
         self.queue = ConversionQueue(restored_jobs)
         self.task_rows: dict[str, TaskRowView] = {}
-        self.active_task_id: str | None = restored_active_task
+        self.active_task_id: str | None = None
         self.session_save_task: asyncio.Task | None = None
         self.current_batch_ids: tuple[str, ...] = ()
         self.stop_batch_requested = False
@@ -612,8 +612,8 @@ class ConverterApp:
         self._configure_page()
         self._refresh_queue_view()
         self._show_page(0)
-        if self.active_task_id is not None:
-            asyncio.create_task(self._activate_task(self.active_task_id))
+        if restored_active_task is not None:
+            asyncio.create_task(self._activate_task(restored_active_task))
 
     def _configure_page(self) -> None:
         self.page.title = f"{DISPLAY_NAME} {VERSION}"
@@ -731,7 +731,9 @@ class ConverterApp:
         self.recursive_switch = ft.Switch(
             label="递归读取图片子目录", value=False, on_change=self._on_geometry_change
         )
-        self.force_switch = ft.Switch(label="允许覆盖已有输出", value=False)
+        self.force_switch = ft.Switch(
+            label="允许覆盖已有输出", value=False, on_change=self._on_task_option_change
+        )
         self.target_dropdown = ft.Dropdown(
             label="目标屏幕",
             value=self.settings.target_profile,
@@ -739,6 +741,7 @@ class ConverterApp:
                 ft.DropdownOption(key=key, text=value[0])
                 for key, value in TARGET_PROFILES.items()
             ],
+            on_select=self._on_task_option_change,
         )
         self.preset_dropdown = ft.Dropdown(
             label="转换预设",
@@ -2176,8 +2179,8 @@ class ConverterApp:
             self.loading_task_controls = False
 
     async def _activate_task(self, job_id: str, *, scroll_target: str | None = None) -> None:
-        if self.active_task_id != job_id:
-            self._save_active_task_options()
+        if not self._save_editor_before_action():
+            return
         try:
             job = self.queue.find(job_id)
         except KeyError:
@@ -2186,10 +2189,48 @@ class ConverterApp:
         self._load_job_controls(job)
         self._set_editor_locked(job.frozen or job.state == "running")
         self._refresh_queue_view()
-        await self._load_first_preview()
         if scroll_target:
             with contextlib.suppress(Exception):
                 await self.convert_scroll.scroll_to(key=scroll_target, duration=250)
+        await self._load_first_preview()
+
+    def _validate_editor_numbers(self) -> bool:
+        valid = True
+        changed = []
+        for field, minimum, maximum in (
+            (self.width_field, 1, 255),
+            (self.height_field, 1, 255),
+            (self.fps_field, 1, 120),
+            (self.skip_frames_field, 0, 999999),
+        ):
+            try:
+                value = int(field.value)
+                error = None if minimum <= value <= maximum else f"请输入 {minimum}–{maximum}"
+            except (TypeError, ValueError):
+                error = "请输入整数"
+            valid = valid and error is None
+            if field.error != error:
+                field.error = error
+                changed.append(field)
+        if changed:
+            self.page.update(*changed)
+        return valid
+
+    def _save_editor_before_action(self) -> bool:
+        try:
+            job = self.queue.find(self.active_task_id)
+        except KeyError:
+            return True
+        if job.frozen or job.state == "running":
+            return True
+        if self._save_active_task_options():
+            return True
+        self._show_notice("请先修正当前任务的参数，再切换任务或开始转换。")
+        return False
+
+    def _on_task_option_change(self, _) -> None:
+        if self._save_active_task_options():
+            self._refresh_queue_view()
 
     def _save_active_task_options(self) -> bool:
         if getattr(self, "loading_task_controls", False) or not getattr(
@@ -2200,9 +2241,17 @@ class ConverterApp:
             job = self.queue.find(self.active_task_id)
             if job.state == "running" or job.frozen:
                 return False
+            if not self._validate_editor_numbers():
+                return False
+            options = self._options()
+            if (
+                job.options.trim_end_seconds is None
+                and options.trim_end_seconds == self.trim_slider.max
+            ):
+                options = replace(options, trim_end_seconds=None)
             self.queue.replace_options(
                 job.id,
-                self._options(),
+                options,
                 target_profile=self.target_dropdown.value,
             )
             return True
@@ -2520,7 +2569,8 @@ class ConverterApp:
     async def _start_conversion(self, _):
         if self.busy:
             return
-        self._save_active_task_options()
+        if not self._save_editor_before_action():
+            return
         jobs = self.queue.freeze_selected()
         if not jobs:
             self._show_error("无法开始转换", ValueError("请先添加并勾选至少一个任务"))
@@ -2966,6 +3016,8 @@ class ConverterApp:
     async def _on_geometry_change(self, _):
         """Reload the preview when an option changes frame geometry or timing."""
         if not self.source_field.value:
+            return
+        if not self._validate_editor_numbers():
             return
         self.preview_revision += 1
         revision = self.preview_revision

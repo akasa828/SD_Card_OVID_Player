@@ -258,6 +258,28 @@ class ConverterServicesTests(unittest.TestCase):
             self.assertFalse(job.selected)
             self.assertIs(summary, job.summary)
 
+    def test_saving_unchanged_options_preserves_completed_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = services.ConversionQueue()
+            job = queue.add(self.options(Path(directory)))
+            summary = ovid_codec.OvidSummary(job.options.output, 8, 8, 1, 15, 8, 28, 2)
+            queue.complete(job.id, summary)
+
+            queue.replace_options(job.id, job.options, target_profile=job.target_profile)
+
+            self.assertEqual("completed", job.state)
+            self.assertIs(summary, job.summary)
+            self.assertFalse(job.selected)
+
+    def test_changing_only_the_target_resets_completed_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = services.ConversionQueue()
+            job = queue.add(self.options(Path(directory)))
+            queue.update(job.id, state="completed")
+            queue.replace_options(job.id, job.options, target_profile="stm32f103-128x32")
+            self.assertEqual("queued", job.state)
+            self.assertEqual("stm32f103-128x32", job.target_profile)
+
     def test_conversion_logger_releases_handlers(self):
         with tempfile.TemporaryDirectory() as directory:
             logger = services.ConversionLogger(Path(directory))

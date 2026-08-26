@@ -473,6 +473,10 @@ class ConversionQueue:
             job = self.find(job_id)
             if job.state == "running" or job.frozen:
                 raise ValueError("正在转换的任务不能修改参数")
+            if options == job.options and (
+                target_profile is None or target_profile == job.target_profile
+            ):
+                return job
             job.options = options
             if target_profile is not None:
                 job.target_profile = target_profile

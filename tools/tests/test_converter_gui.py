@@ -23,6 +23,70 @@ import ovid_converter_gui as converter_gui  # noqa: E402
 
 
 class ConverterGuiTests(unittest.TestCase):
+    def make_editor(self):
+        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
+        app.settings = converter_gui.AppSettings()
+        app.preset_store = mock.Mock()
+        app.preset_store.all_presets.return_value = converter_gui.BUILTIN_PRESETS
+        app.page = SimpleNamespace(update=mock.Mock())
+        app.queue = converter_gui.ConversionQueue()
+        app.active_task_id = None
+        app._build_controls()
+        return app
+
+    def test_task_option_events_save_without_reloading_preview(self):
+        app = self.make_editor()
+        app._save_active_task_options = mock.Mock(return_value=True)
+        app._refresh_queue_view = mock.Mock()
+        app._load_first_preview = mock.AsyncMock()
+        app.force_switch.on_change(None)
+        app.target_dropdown.on_select(None)
+        self.assertEqual(2, app._save_active_task_options.call_count)
+        self.assertEqual(2, app._refresh_queue_view.call_count)
+        app._load_first_preview.assert_not_called()
+
+    def test_invalid_editor_numbers_show_inline_errors_and_can_be_corrected(self):
+        app = self.make_editor()
+        app.fps_field.value = ""
+        app.width_field.value = "256"
+        self.assertFalse(app._validate_editor_numbers())
+        self.assertEqual("请输入整数", app.fps_field.error)
+        self.assertEqual("请输入 1–255", app.width_field.error)
+        app.fps_field.value = "60"
+        app.width_field.value = "128"
+        self.assertTrue(app._validate_editor_numbers())
+        self.assertIsNone(app.fps_field.error)
+        self.assertIsNone(app.width_field.error)
+
+    def test_invalid_editor_does_not_switch_task_or_convert_stale_options(self):
+        app = self.make_editor()
+        job = app.queue.add(converter_gui.ConversionOptions(Path("source.png"), Path("a.BIN")))
+        app.active_task_id = job.id
+        app.fps_field.value = ""
+        app.busy = False
+        app._show_notice = mock.Mock()
+        app._load_job_controls = mock.Mock()
+        app.queue.freeze_selected = mock.Mock()
+        asyncio.run(app._activate_task("another-task"))
+        asyncio.run(app._start_conversion(None))
+        self.assertEqual(job.id, app.active_task_id)
+        app._load_job_controls.assert_not_called()
+        app.queue.freeze_selected.assert_not_called()
+        self.assertEqual(2, app._show_notice.call_count)
+
+    def test_viewing_completed_full_length_video_preserves_output_record(self):
+        app = self.make_editor()
+        options = converter_gui.ConversionOptions(Path("clip.mp4"), Path("clip.BIN"))
+        job = app.queue.add(options)
+        app.active_task_id = job.id
+        app.queue.update(job.id, state="completed")
+        job.summary = mock.sentinel.summary
+        app.trim_slider.max = 12.8
+        app._options = mock.Mock(return_value=converter_gui.replace(options, trim_end_seconds=12.8))
+        self.assertTrue(app._save_active_task_options())
+        self.assertEqual("completed", job.state)
+        self.assertIs(mock.sentinel.summary, job.summary)
+
     def test_lightweight_package_excludes_unused_flet_web_backend(self) -> None:
         source = PACKAGE_SOURCE.read_text(encoding="utf-8")
         self.assertIn(
@@ -158,6 +222,7 @@ class ConverterGuiTests(unittest.TestCase):
         options = SimpleNamespace(validate=mock.Mock())
         app._options = mock.Mock(return_value=options)
         app._load_first_preview = mock.AsyncMock()
+        app._validate_editor_numbers = mock.Mock(return_value=True)
 
         async def exercise() -> None:
             with mock.patch.object(converter_gui.asyncio, "sleep", new=mock.AsyncMock()):
