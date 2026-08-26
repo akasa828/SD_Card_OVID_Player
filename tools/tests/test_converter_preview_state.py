@@ -21,6 +21,7 @@ class PreviewStateTests(unittest.IsolatedAsyncioTestCase):
         app.preset_store = mock.Mock()
         app.preset_store.all_presets.return_value = gui.BUILTIN_PRESETS
         app.page = SimpleNamespace(update=mock.Mock(), show_dialog=mock.Mock(), pop_dialog=mock.Mock())
+        app.page.show_dialog.side_effect = lambda dialog: setattr(dialog, "open", True)
         app.queue = gui.ConversionQueue()
         app.active_task_id = None
         app.page_index = 0
@@ -273,6 +274,59 @@ class PreviewStateTests(unittest.IsolatedAsyncioTestCase):
         self.app.page.show_dialog.call_args.args[0].actions[-1].on_click(None)
         await asyncio.sleep(0)
         self.assertEqual(96, self.app.threshold_slider.value)
+        self.assertEqual(96, job.options.threshold)
+        self.app._rerender_current_preview.assert_awaited_once()
+
+    async def test_cancelled_threshold_suggestion_does_not_apply_late_click(self):
+        job = self.add_task()
+        self.app._rerender_current_preview = mock.AsyncMock()
+        for native in (False, True):
+            with self.subTest(native=native):
+                with mock.patch.object(gui, "suggested_threshold", return_value=96):
+                    await self.app._auto_threshold("standard")
+                dialog = self.app.page.show_dialog.call_args.args[0]
+                if native:
+                    await dialog.on_dismiss(None)
+                else:
+                    dialog.actions[0].on_click(None)
+                dialog.actions[-1].on_click(None)
+                await asyncio.sleep(0)
+                self.assertEqual(128, job.options.threshold)
+                self.app._rerender_current_preview.assert_not_awaited()
+
+    async def test_threshold_suggestion_applies_once_and_preserves_notice(self):
+        job = self.add_task()
+        self.app._refresh_queue_view = mock.Mock()
+        self.app._rerender_current_preview = mock.AsyncMock()
+        with mock.patch.object(gui, "suggested_threshold", return_value=96):
+            await self.app._auto_threshold("standard")
+        dialog = self.app.page.show_dialog.call_args.args[0]
+        notice = gui.ft.SnackBar(content=gui.ft.Text("完成"))
+        self.app._show_dialog(notice)
+        dialog.actions[-1].on_click(None)
+        dialog.actions[-1].on_click(None)
+        await asyncio.sleep(0)
+        self.assertFalse(dialog.open)
+        self.assertTrue(notice.open)
+        self.assertEqual(96, job.options.threshold)
+        self.app._rerender_current_preview.assert_awaited_once()
+
+    async def test_threshold_suggestion_waits_until_child_dialog_closes(self):
+        job = self.add_task()
+        self.app._refresh_queue_view = mock.Mock()
+        self.app._rerender_current_preview = mock.AsyncMock()
+        with mock.patch.object(gui, "suggested_threshold", return_value=96):
+            await self.app._auto_threshold("standard")
+        dialog = self.app.page.show_dialog.call_args.args[0]
+        self.app._show_message("提示", "后台消息")
+        child = self.app.page.show_dialog.call_args.args[0]
+        dialog.actions[-1].on_click(None)
+        self.assertEqual(128, job.options.threshold)
+        self.assertTrue(dialog.open)
+        self.assertTrue(child.open)
+        child.actions[0].on_click(None)
+        dialog.actions[-1].on_click(None)
+        await asyncio.sleep(0)
         self.assertEqual(96, job.options.threshold)
         self.app._rerender_current_preview.assert_awaited_once()
 

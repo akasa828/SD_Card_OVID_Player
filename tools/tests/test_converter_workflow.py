@@ -21,6 +21,7 @@ class ConverterWorkflowTests(unittest.IsolatedAsyncioTestCase):
         app.preset_store = gui.PresetStore(self.root / "presets.json")
         app.preset_store.upsert(gui.ConversionPreset("Mine", threshold=96))
         app.page = SimpleNamespace(update=mock.Mock(), show_dialog=mock.Mock(), pop_dialog=mock.Mock())
+        app.page.show_dialog.side_effect = lambda dialog: setattr(dialog, "open", True)
         app.queue = gui.ConversionQueue()
         app.active_task_id = None
         app.pending_trim_range = None
@@ -95,8 +96,8 @@ class ConverterWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.add_task()
         self.app._set_threshold_value(64)
         self.app._save_preset_dialog(None)
-        self.app.preset_name_field.value = "Mine"
-        self.app._confirm_save_preset(None)
+        self.dialog().content.value = "Mine"
+        self.dialog().actions[-1].on_click(None)
         self.assertEqual(96, self.app.preset_store.load_user_presets()[0].threshold)
         self.dialog().actions[-1].on_click(None)
         self.assertEqual(64, self.app.preset_store.load_user_presets()[0].threshold)
@@ -119,17 +120,17 @@ class ConverterWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.add_task()
         self.app._set_threshold_value(64)
         self.app._save_preset_dialog(None)
-        self.app.preset_name_field.value = "Snapshot"
+        self.dialog().content.value = "Snapshot"
         self.app._set_threshold_value(200)
-        self.app._confirm_save_preset(None)
+        self.dialog().actions[-1].on_click(None)
         preset = next(item for item in self.app.preset_store.load_user_presets() if item.name == "Snapshot")
         self.assertEqual(64, preset.threshold)
 
     def test_can_save_a_parameter_preset_before_importing_media(self):
         self.app.width_field.value = "96"
         self.app._save_preset_dialog(None)
-        self.app.preset_name_field.value = "No media"
-        self.app._confirm_save_preset(None)
+        self.dialog().content.value = "No media"
+        self.dialog().actions[-1].on_click(None)
         self.app._show_error.assert_not_called()
         preset = next(item for item in self.app.preset_store.load_user_presets() if item.name == "No media")
         self.assertEqual(96, preset.width)

@@ -16,6 +16,19 @@ class DialogHost:
     def has_modal(self) -> bool:
         return any(dialog.open for dialog in self._dialogs.values())
 
+    def is_current(self, dialog: ft.AlertDialog) -> bool:
+        current = next(
+            (item for item in reversed(self._dialogs.values()) if item.open), None,
+        )
+        return current is dialog
+
+    def close(self, dialog: ft.AlertDialog) -> bool:
+        if not self.is_current(dialog):
+            return False
+        dialog.open = False
+        self.page.update(dialog)
+        return True
+
     def show(self, dialog: ft.DialogControl) -> None:
         if not isinstance(dialog, ft.AlertDialog):
             self.page.show_dialog(dialog)

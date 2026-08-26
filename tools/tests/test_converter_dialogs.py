@@ -159,6 +159,250 @@ class DialogHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, callback.call_count)
 
 
+class DialogCloseTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.page = dialog_page()
+        self.host = DialogHost(self.page)
+
+    def test_close_targets_alert_without_closing_newer_snackbar(self):
+        dialog, notice = ft.AlertDialog(), ft.SnackBar(content=ft.Text("done"))
+        self.host.show(dialog)
+        self.host.show(notice)
+        self.assertTrue(self.host.close(dialog))
+        self.assertFalse(dialog.open)
+        self.assertTrue(notice.open)
+        self.page.update.assert_called_once_with(dialog)
+        self.page.pop_dialog.assert_not_called()
+
+    def test_duplicate_close_is_a_noop(self):
+        dialog = ft.AlertDialog()
+        self.host.show(dialog)
+        self.assertTrue(self.host.close(dialog))
+        self.assertFalse(self.host.close(dialog))
+        self.page.update.assert_called_once_with(dialog)
+
+    def test_parent_cannot_be_confirmed_while_child_alert_is_open(self):
+        first, second = ft.AlertDialog(), ft.AlertDialog()
+        self.host.show(first)
+        self.host.show(second)
+        self.assertFalse(self.host.is_current(first))
+        self.assertFalse(self.host.close(first))
+        self.assertTrue(first.open)
+        self.assertTrue(self.host.close(second))
+        self.assertTrue(self.host.is_current(first))
+        self.assertTrue(self.host.close(first))
+
+    async def test_native_dismissed_or_unregistered_dialog_cannot_be_closed(self):
+        dialog = ft.AlertDialog()
+        self.assertFalse(self.host.close(dialog))
+        self.host.show(dialog)
+        await dialog.on_dismiss(None)
+        self.assertFalse(self.host.close(dialog))
+        self.page.update.assert_not_called()
+
+    async def test_close_waits_for_native_dismiss_to_invoke_callback(self):
+        callback = mock.AsyncMock()
+        dialog = ft.AlertDialog(on_dismiss=callback)
+        self.host.show(dialog)
+        dismiss = dialog.on_dismiss
+        self.host.close(dialog)
+        callback.assert_not_awaited()
+        await dismiss(None)
+        await dismiss(None)
+        callback.assert_awaited_once_with(None)
+
+    async def test_close_with_real_flet_stack_preserves_other_dialogs(self):
+        page = BasePage()
+        host = DialogHost(page)
+        callback = mock.Mock()
+        dialog = ft.AlertDialog(on_dismiss=callback)
+        notice = ft.SnackBar(content=ft.Text("done"))
+
+        async def dispatch(control, name, data):
+            await control.on_dismiss(data)
+
+        with mock.patch.object(BaseControl, "update"), mock.patch.object(BasePage, "update"), mock.patch.object(ft.AlertDialog, "_trigger_event", dispatch):
+            host.show(dialog)
+            native_dismiss = dialog.on_dismiss
+            host.show(notice)
+            self.assertTrue(host.close(dialog))
+            self.assertFalse(host.has_modal)
+            self.assertTrue(notice.open)
+            self.assertFalse(host.close(dialog))
+            await native_dismiss(SimpleNamespace(data=None))
+            callback.assert_called_once()
+            self.assertIs(notice, page.pop_dialog())
+
+
+class DialogActionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.app = gui.ConverterApp.__new__(gui.ConverterApp)
+        app = self.app
+        app.page = dialog_page()
+        app.logger = SimpleNamespace(read=lambda: "log")
+        app._validate_editor_numbers = mock.Mock(return_value=True)
+        app._options_for_source = mock.Mock(return_value=gui.ConversionOptions(Path(), Path("preview.bin")))
+        app.target_dropdown = ft.Dropdown(value=gui.BUILTIN_PRESETS[0].target_profile)
+        app.preset_store = SimpleNamespace(all_presets=mock.Mock(return_value=[]))
+        app._store_preset = mock.Mock()
+        app._show_error = mock.Mock()
+
+    def confirmation(self, callback):
+        self.app._confirm_preset_action("删除？", "确认", "删除", callback)
+        return self.app.page.shown[-1]
+
+    def preset_dialog(self, name):
+        self.app._save_preset_dialog(None)
+        dialog = self.app.page.shown[-1]
+        dialog.content.value = name
+        return dialog
+
+    def test_confirmation_closes_itself_and_runs_once_after_notice(self):
+        callback = mock.Mock()
+        dialog = self.confirmation(callback)
+        self.app._show_notice("转换完成")
+        notice = self.app.page.shown[-1]
+        dialog.actions[-1].on_click(None)
+        dialog.actions[-1].on_click(None)
+        callback.assert_called_once_with()
+        self.assertFalse(dialog.open)
+        self.assertTrue(notice.open)
+
+    async def test_cancel_or_native_dismiss_prevents_late_confirmation(self):
+        for native in (False, True):
+            with self.subTest(native=native):
+                callback = mock.Mock()
+                dialog = self.confirmation(callback)
+                if native:
+                    await dialog.on_dismiss(None)
+                else:
+                    dialog.actions[0].on_click(None)
+                dialog.actions[-1].on_click(None)
+                callback.assert_not_called()
+
+    def test_late_parent_confirm_does_not_dismiss_child(self):
+        callback = mock.Mock()
+        parent = self.confirmation(callback)
+        self.app._show_message("另一个弹窗", "内容")
+        child = self.app.page.shown[-1]
+        parent.actions[-1].on_click(None)
+        callback.assert_not_called()
+        self.assertTrue(parent.open)
+        self.assertTrue(child.open)
+        child.actions[0].on_click(None)
+        parent.actions[-1].on_click(None)
+        callback.assert_called_once_with()
+
+    def test_failed_action_is_not_repeated_by_duplicate_confirm(self):
+        callback = mock.Mock(side_effect=OSError("disk full"))
+        dialog = self.confirmation(callback)
+        dialog.actions[-1].on_click(None)
+        dialog.actions[-1].on_click(None)
+        callback.assert_called_once_with()
+        self.app._show_error.assert_called_once()
+
+    def test_logs_and_message_buttons_only_close_their_own_dialog(self):
+        for open_dialog in (lambda: self.app._show_logs(None), lambda: self.app._show_message("完成", "成功")):
+            with self.subTest(open_dialog=open_dialog):
+                open_dialog()
+                dialog = self.app.page.shown[-1]
+                self.app._show_notice("后台通知")
+                notice = self.app.page.shown[-1]
+                dialog.actions[0].on_click(None)
+                dialog.actions[0].on_click(None)
+                self.assertFalse(dialog.open)
+                self.assertTrue(notice.open)
+
+    def test_cancelled_save_cannot_write_or_read_new_dialog_name(self):
+        old = self.preset_dialog("Old")
+        old.actions[0].on_click(None)
+        new = self.preset_dialog("New")
+        old.actions[-1].on_click(None)
+        self.app._store_preset.assert_not_called()
+        self.assertTrue(new.open)
+        self.assertEqual("New", new.content.value)
+
+    def test_save_uses_own_name_options_and_target_snapshot(self):
+        first = self.preset_dialog("First")
+        self.app._options_for_source.return_value = gui.ConversionOptions(Path(), Path("x.bin"), threshold=75)
+        self.app.target_dropdown.value = "custom"
+        second = self.preset_dialog("Second")
+        first.actions[-1].on_click(None)
+        self.app._store_preset.assert_not_called()
+        second.actions[0].on_click(None)
+        first.actions[-1].on_click(None)
+        preset = self.app._store_preset.call_args.args[0]
+        self.assertEqual(("First", 128, gui.BUILTIN_PRESETS[0].target_profile), (preset.name, preset.threshold, preset.target_profile))
+
+    def test_duplicate_save_writes_once_without_dismissing_notice(self):
+        dialog = self.preset_dialog("Mine")
+        self.app._show_notice("后台通知")
+        notice = self.app.page.shown[-1]
+        dialog.actions[-1].on_click(None)
+        dialog.actions[-1].on_click(None)
+        self.app._store_preset.assert_called_once()
+        self.assertFalse(dialog.open)
+        self.assertTrue(notice.open)
+
+    def test_invalid_name_is_inline_and_can_be_corrected(self):
+        dialog = self.preset_dialog("   ")
+        dialog.actions[-1].on_click(None)
+        self.assertTrue(dialog.open)
+        self.assertIsNotNone(dialog.content.error)
+        self.app._show_error.assert_not_called()
+        self.app._store_preset.assert_not_called()
+        dialog.content.value = "Valid"
+        dialog.actions[-1].on_click(None)
+        self.assertIsNone(dialog.content.error)
+        self.app._store_preset.assert_called_once()
+
+    def test_overwrite_opens_one_confirmation_and_ignores_old_save(self):
+        self.app.preset_store.all_presets.return_value = [gui.ConversionPreset("Mine")]
+        original = self.preset_dialog("Mine")
+        original.actions[-1].on_click(None)
+        overwrite = self.app.page.shown[-1]
+        self.assertIsNot(original, overwrite)
+        original.actions[-1].on_click(None)
+        self.assertIs(overwrite, self.app.page.shown[-1])
+        overwrite.actions[-1].on_click(None)
+        overwrite.actions[-1].on_click(None)
+        self.app._store_preset.assert_called_once()
+
+    async def test_native_dismissed_save_cannot_create_an_overwrite_confirmation(self):
+        self.app.preset_store.all_presets.return_value = [gui.ConversionPreset("Mine")]
+        dialog = self.preset_dialog("Mine")
+        await dialog.on_dismiss(None)
+        dialog.actions[-1].on_click(None)
+        self.assertEqual(1, len(self.app.page.shown))
+        self.app._store_preset.assert_not_called()
+
+    def test_cancelled_overwrite_ignores_old_save_and_confirm_events(self):
+        self.app.preset_store.all_presets.return_value = [gui.ConversionPreset("Mine")]
+        original = self.preset_dialog("Mine")
+        original.actions[-1].on_click(None)
+        overwrite = self.app.page.shown[-1]
+        overwrite.actions[0].on_click(None)
+        original.actions[-1].on_click(None)
+        overwrite.actions[-1].on_click(None)
+        self.app._store_preset.assert_not_called()
+        self.assertEqual(2, len(self.app.page.shown))
+
+    def test_builtin_preset_name_reports_inline_error(self):
+        self.app.preset_store.all_presets.return_value = gui.BUILTIN_PRESETS
+        dialog = self.preset_dialog(gui.BUILTIN_PRESETS[0].name)
+        dialog.actions[-1].on_click(None)
+        self.assertIn("内置预设", dialog.content.error)
+        self.assertTrue(dialog.open)
+        self.app._show_error.assert_not_called()
+        self.app._store_preset.assert_not_called()
+
+    def test_enter_and_click_share_one_save_guard(self):
+        dialog = self.preset_dialog("Enter")
+        dialog.content.on_submit(None)
+        dialog.actions[-1].on_click(None)
+        self.app._store_preset.assert_called_once()
+
+
 class ShortcutTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.app = gui.ConverterApp.__new__(gui.ConverterApp)
@@ -296,6 +540,14 @@ class ShortcutTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual([], bypasses)
 
+    def test_gui_never_pops_an_unspecified_dialog(self):
+        tree = ast.parse(Path(gui.__file__).read_text(encoding="utf-8-sig"))
+        self.assertEqual([], [
+            node.lineno for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "pop_dialog"
+        ])
+
 
 class ExitDialogTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -358,6 +610,19 @@ class ExitDialogTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.app.exit_after_conversion_stop)
         self.app._cancel_conversion.assert_called_once_with(None)
         self.app._shutdown_and_exit.assert_not_awaited()
+
+    async def test_exit_cannot_be_confirmed_behind_another_alert(self):
+        dialog = await self.request_exit()
+        self.app._show_message("完成", "后台任务状态")
+        child = self.app.page.shown[-1]
+        await dialog.actions[-1].on_click(None)
+        self.app._cancel_conversion.assert_not_called()
+        self.assertTrue(self.app.exit_dialog_open)
+        self.assertTrue(dialog.open)
+        self.assertTrue(child.open)
+        child.actions[0].on_click(None)
+        await dialog.actions[-1].on_click(None)
+        self.app._cancel_conversion.assert_called_once_with(None)
 
     async def test_conversion_finished_during_confirmation_exits_without_cancelling(self):
         dialog = await self.request_exit()

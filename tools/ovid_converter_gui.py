@@ -893,7 +893,6 @@ class ConverterApp:
             on_select=self._apply_selected_preset,
             col=10,
         )
-        self.preset_name_field = ft.TextField(label="新预设名称", expand=True)
         self._refresh_preset_options()
 
         self.preset_menu = ft.PopupMenuButton(
@@ -2424,18 +2423,17 @@ class ConverterApp:
 
     def _show_logs(self, _):
         content = self.logger.read() or "当前还没有转换日志。"
-        self._show_dialog(
-            ft.AlertDialog(
-                title="转换日志",
-                content=ft.Container(
-                    content=ft.Text(content, selectable=True, size=12),
-                    width=760,
-                    height=420,
-                ),
-                actions=[ft.Button("关闭", on_click=lambda _: self.page.pop_dialog())],
-                scrollable=True,
-            )
+        dialog = ft.AlertDialog(
+            title="转换日志",
+            content=ft.Container(
+                content=ft.Text(content, selectable=True, size=12),
+                width=760,
+                height=420,
+            ),
+            actions=[ft.Button("关闭", on_click=lambda _: self._close_dialog(dialog))],
+            scrollable=True,
         )
+        self._show_dialog(dialog)
 
     async def _export_logs(self, _):
         selected = await self.file_picker.save_file(
@@ -3517,12 +3515,13 @@ class ConverterApp:
             closed = True
 
         def close(_=None):
-            if not closed:
-                dismiss()
-                self.page.pop_dialog()
+            if closed or not self._close_dialog(dialog):
+                return False
+            dismiss()
+            return True
 
         async def apply(_):
-            if closed:
+            if closed or not self.dialog_host.is_current(dialog):
                 return
             if context != (self.active_task_id, self.preview_revision) or not self._can_edit_task(context[0]):
                 close()
@@ -3547,12 +3546,11 @@ class ConverterApp:
                 range_error.value, range_error.visible = str(exc), True
                 self.page.update(start_field, end_field, range_error)
                 return
-            close()
-            if values != list(original):
+            if close() and values != list(original):
                 await self._apply_trim_range(*values)
 
         start_field.on_submit = end_field.on_submit = apply
-        self._show_dialog(ft.AlertDialog(
+        dialog = ft.AlertDialog(
             modal=True,
             on_dismiss=dismiss,
             scrollable=True,
@@ -3569,7 +3567,8 @@ class ConverterApp:
                 ft.TextButton("取消", on_click=close),
                 ft.FilledButton("应用范围", on_click=apply),
             ],
-        ))
+        )
+        self._show_dialog(dialog)
 
     async def _trim_at_playhead(self, event) -> None:
         if self.trim_slider.disabled or not self._can_edit_task(self.active_task_id):
@@ -3608,19 +3607,19 @@ class ConverterApp:
             value = await asyncio.to_thread(suggested_threshold, gray, mode)
             if not self._threshold_context_is_current(context):
                 return
-            self._show_dialog(
-                ft.AlertDialog(
-                    title="自动阈值建议",
-                    content=ft.Text(f"根据当前预览帧计算出的建议阈值为 {value}。是否应用？"),
-                    actions=[
-                        ft.TextButton("取消", on_click=lambda _: self.page.pop_dialog()),
-                        ft.FilledButton(
-                            "应用",
-                            on_click=lambda _: self._apply_threshold_suggestion(value, context),
-                        ),
-                    ],
-                )
+            def apply(_):
+                if self._close_dialog(dialog):
+                    self._apply_threshold_suggestion(value, context)
+
+            dialog = ft.AlertDialog(
+                title="自动阈值建议",
+                content=ft.Text(f"根据当前预览帧计算出的建议阈值为 {value}。是否应用？"),
+                actions=[
+                    ft.TextButton("取消", on_click=lambda _: self._close_dialog(dialog)),
+                    ft.FilledButton("应用", on_click=apply),
+                ],
             )
+            self._show_dialog(dialog)
         except Exception as exc:
             if self._threshold_context_is_current(context):
                 self._show_error("无法分析自动阈值", exc)
@@ -3637,7 +3636,6 @@ class ConverterApp:
     def _apply_threshold_suggestion(
         self, value: int, context: tuple[str | None, int, int]
     ) -> None:
-        self.page.pop_dialog()
         if not self._threshold_context_is_current(context):
             self._show_notice("任务或预览已变化，请重新分析阈值。")
             return
@@ -3713,29 +3711,36 @@ class ConverterApp:
     def _save_preset_dialog(self, _):
         if not self._validate_editor_numbers():
             return
-        self.pending_preset_options = self._options_for_source(
+        options = self._options_for_source(
             Path(), Path("preview.bin"), use_current_trim=False
         )
-        self.pending_preset_target = self.target_dropdown.value
-        self.preset_name_field.value = ""
-        self._show_dialog(
-            ft.AlertDialog(
-                title="保存转换预设",
-                modal=True,
-                content=self.preset_name_field,
-                actions=[
-                    ft.TextButton("取消", on_click=lambda _: self.page.pop_dialog()),
-                    ft.FilledButton("保存", on_click=self._confirm_save_preset),
-                ],
-            )
-        )
+        target = self.target_dropdown.value
+        name_field = ft.TextField(label="新预设名称", autofocus=True)
 
-    def _confirm_save_preset(self, _):
+        def confirm(_):
+            self._confirm_save_preset(dialog, options, target)
+
+        name_field.on_submit = confirm
+        dialog = ft.AlertDialog(
+            title="保存转换预设",
+            modal=True,
+            content=name_field,
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_dialog(dialog)),
+                ft.FilledButton("保存", on_click=confirm),
+            ],
+        )
+        self._show_dialog(dialog)
+
+    def _confirm_save_preset(
+        self, dialog: ft.AlertDialog, options: ConversionOptions, target: str,
+    ) -> None:
+        if not self.dialog_host.is_current(dialog):
+            return
+        name_field = dialog.content
         try:
             preset = ConversionPreset.from_options(
-                self.preset_name_field.value.strip(),
-                self.pending_preset_options,
-                self.pending_preset_target,
+                (name_field.value or "").strip(), options, target,
             )
             preset.validate()
             existing = next(
@@ -3744,18 +3749,24 @@ class ConverterApp:
             )
             if existing is not None and existing.builtin:
                 raise ValueError("内置预设不能被覆盖，请换一个名称。")
-            if existing is not None:
-                self.page.pop_dialog()
-                self._confirm_preset_action(
-                    "覆盖已有预设？",
-                    f"将替换“{existing.name}”的参数，已有转换任务保持不变。",
-                    "覆盖", lambda: self._store_preset(preset),
-                )
-            else:
-                self.page.pop_dialog()
-                self._store_preset(preset)
+        except ValueError as exc:
+            name_field.error = str(exc)
+            self.page.update(name_field)
+            return
         except Exception as exc:
             self._show_error("无法保存预设", exc)
+            return
+        name_field.error = None
+        if not self._close_dialog(dialog):
+            return
+        if existing is not None:
+            self._confirm_preset_action(
+                "覆盖已有预设？",
+                f"将替换“{existing.name}”的参数，已有转换任务保持不变。",
+                "覆盖", lambda: self._store_preset(preset),
+            )
+        else:
+            self._store_preset(preset)
 
     def _store_preset(self, preset: ConversionPreset) -> None:
         try:
@@ -3770,20 +3781,22 @@ class ConverterApp:
 
     def _confirm_preset_action(self, title: str, message: str, action: str, callback) -> None:
         def confirm(_):
-            self.page.pop_dialog()
+            if not self._close_dialog(dialog):
+                return
             try:
                 callback()
             except (OSError, ValueError) as exc:
                 self._show_error("无法修改预设", exc)
-        self._show_dialog(ft.AlertDialog(
+        dialog = ft.AlertDialog(
             title=title,
             modal=True,
             content=ft.Text(message),
             actions=[
-                ft.TextButton("取消", on_click=lambda _: self.page.pop_dialog()),
+                ft.TextButton("取消", on_click=lambda _: self._close_dialog(dialog)),
                 ft.FilledButton(action, on_click=confirm),
             ],
-        ))
+        )
+        self._show_dialog(dialog)
 
     def _delete_selected_preset(self, _):
         preset = next(
@@ -4099,9 +4112,9 @@ class ConverterApp:
     def _dismiss_exit_dialog(self, dialog: ft.AlertDialog) -> bool:
         if self.exit_dialog is not dialog or not self.exit_dialog_open:
             return False
+        if not self._close_dialog(dialog):
+            return False
         self._exit_dialog_dismissed(dialog)
-        dialog.open = False
-        self.page.update(dialog)
         return True
 
     async def _confirm_exit(self, dialog: ft.AlertDialog) -> None:
@@ -4203,20 +4216,22 @@ class ConverterApp:
             self.dialog_host = DialogHost(self.page)
         self.dialog_host.show(dialog)
 
+    def _close_dialog(self, dialog: ft.AlertDialog) -> bool:
+        return hasattr(self, "dialog_host") and self.dialog_host.close(dialog)
+
     def _show_error(self, title: str, error: Exception) -> None:
         ErrorDetailsDialog(
             self.page, self.clipboard, ErrorReport.from_exception(title, error),
         ).show(self._show_dialog)
 
     def _show_message(self, title: str, message: str) -> None:
-        self._show_dialog(
-            ft.AlertDialog(
-                title=title,
-                icon=ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE),
-                content=ft.Text(message, selectable=True),
-                actions=[ft.Button("确定", on_click=lambda _: self.page.pop_dialog())],
-            )
+        dialog = ft.AlertDialog(
+            title=title,
+            icon=ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE),
+            content=ft.Text(message, selectable=True),
+            actions=[ft.Button("确定", on_click=lambda _: self._close_dialog(dialog))],
         )
+        self._show_dialog(dialog)
 
     def _show_notice(self, message: str) -> None:
         self._show_dialog(

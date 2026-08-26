@@ -568,7 +568,7 @@ class ConverterGuiTests(unittest.TestCase):
         source = GUI_SOURCE.read_text(encoding="utf-8")
         self.assertNotIn('col={"xs": 12, "lg": 5}', source)
         preset_start = source.index("self.preset_dropdown = ft.Dropdown(")
-        preset_end = source.index("self.preset_name_field", preset_start)
+        preset_end = source.index("self._refresh_preset_options()", preset_start)
         preset_source = source[preset_start:preset_end]
         self.assertNotIn("expand=True", preset_source)
         self.assertIn('col=10', preset_source)

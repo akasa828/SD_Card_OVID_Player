@@ -20,6 +20,7 @@ class TimelineTests(unittest.IsolatedAsyncioTestCase):
         app.preset_store = mock.Mock()
         app.preset_store.all_presets.return_value = gui.BUILTIN_PRESETS
         app.page = SimpleNamespace(update=mock.Mock(), show_dialog=mock.Mock(), pop_dialog=mock.Mock())
+        app.page.show_dialog.side_effect = lambda dialog: setattr(dialog, "open", True)
         app.queue = gui.ConversionQueue()
         app.active_task_id = None
         app.page_index = 0
@@ -154,7 +155,8 @@ class TimelineTests(unittest.IsolatedAsyncioTestCase):
         app._load_first_preview = mock.AsyncMock(side_effect=load)
         await dialog.actions[-1].on_click(None)
         app._load_first_preview.assert_awaited_once()
-        app.page.pop_dialog.assert_called_once()
+        self.assertFalse(dialog.open)
+        app.page.update.assert_any_call(dialog)
         self.assertFalse(app.trim_error.visible)
 
     async def test_precise_crop_keeps_invalid_values_in_dialog(self):
@@ -230,7 +232,8 @@ class TimelineTests(unittest.IsolatedAsyncioTestCase):
         app._load_first_preview = mock.AsyncMock()
         dialog.actions[0].on_click(None)
         await dialog.actions[-1].on_click(None)
-        app.page.pop_dialog.assert_called_once()
+        self.assertFalse(dialog.open)
+        app.page.update.assert_any_call(dialog)
         app._load_first_preview.assert_not_awaited()
 
     async def test_double_apply_does_not_dismiss_a_new_dialog_or_reload_twice(self):
@@ -240,7 +243,8 @@ class TimelineTests(unittest.IsolatedAsyncioTestCase):
         app._load_first_preview = mock.AsyncMock()
         await dialog.actions[-1].on_click(None)
         await dialog.actions[-1].on_click(None)
-        app.page.pop_dialog.assert_called_once()
+        self.assertFalse(dialog.open)
+        app.page.update.assert_any_call(dialog)
         app._load_first_preview.assert_awaited_once()
 
     async def test_failed_save_restores_range_without_decoding(self):
@@ -251,6 +255,36 @@ class TimelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((0, 12.8), (app.trim_slider.start_value, app.trim_slider.end_value))
         self.assertTrue(app.trim_error.visible)
         app._load_first_preview.assert_not_awaited()
+
+    async def test_trim_confirm_keeps_background_notice_open(self):
+        app = self.app
+        dialog, start, _ = self.dialog()
+        start.value = "2.5"
+        app._load_first_preview = mock.AsyncMock()
+        notice = gui.ft.SnackBar(content=gui.ft.Text("后台通知"))
+        app._show_dialog(notice)
+        await dialog.actions[-1].on_click(None)
+        await dialog.actions[-1].on_click(None)
+        self.assertFalse(dialog.open)
+        self.assertTrue(notice.open)
+        app.page.pop_dialog.assert_not_called()
+        app._load_first_preview.assert_awaited_once()
+
+    async def test_parent_trim_apply_waits_until_child_is_closed(self):
+        app = self.app
+        dialog, start, _ = self.dialog()
+        start.value = "2.5"
+        app._load_first_preview = mock.AsyncMock()
+        app._show_message("提示", "另一项操作")
+        child = app.page.show_dialog.call_args.args[0]
+        await dialog.actions[-1].on_click(None)
+        app._load_first_preview.assert_not_awaited()
+        self.assertTrue(child.open)
+        self.assertEqual(0, self.job.options.trim_start_seconds)
+        child.actions[0].on_click(None)
+        await dialog.actions[-1].on_click(None)
+        self.assertFalse(dialog.open)
+        app._load_first_preview.assert_awaited_once()
 
     async def test_reset_crop_preserves_other_options(self):
         app = self.app
