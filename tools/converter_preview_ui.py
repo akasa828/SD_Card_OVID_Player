@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import math
 
@@ -98,8 +99,8 @@ class PixelInspector:
     def is_open(self) -> bool:
         return not self.closed and self.dialog.open
 
-    def show(self) -> None:
-        self.page.show_dialog(self.dialog)
+    def show(self, presenter: Callable[[ft.DialogControl], None] | None = None) -> None:
+        (presenter or self.page.show_dialog)(self.dialog)
 
     def _size_image(self) -> None:
         self.image.width = self.snapshot.width * self.scale

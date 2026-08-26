@@ -25,6 +25,7 @@ except ImportError:  # Local lightweight builds deliberately omit the Flutter ex
     FletDropZone = None
 
 from converter_version import DISPLAY_NAME, VERSION
+from converter_dialogs import DialogHost
 from converter_feedback import ErrorDetailsDialog, ErrorReport
 from converter_preview_ui import PixelInspector, PreviewSnapshot
 from converter_services import (
@@ -628,6 +629,7 @@ class PreviewSession:
 class ConverterApp:
     def __init__(self, page: ft.Page) -> None:
         self.page = page
+        self.dialog_host = DialogHost(page)
         self.settings = load_settings()
         self.preset_store = PresetStore()
         self.session_store = QueueSessionStore()
@@ -671,6 +673,7 @@ class ConverterApp:
         self.resume_player_after_drag = False
         self.player_time_task: asyncio.Task | None = None
         self.exit_dialog_open = False
+        self.exit_dialog: ft.AlertDialog | None = None
         self.exit_after_conversion_stop = False
         self.page_index = 0
         self.compact_layout: bool | None = None
@@ -1404,7 +1407,8 @@ class ConverterApp:
                     [
                         self.player_path,
                         ft.OutlinedButton(
-                            "打开 .BIN", icon=ft.Icons.FOLDER_OPEN, on_click=self._choose_ovid_file
+                            "打开 .BIN", icon=ft.Icons.FOLDER_OPEN,
+                            tooltip="打开 OVID 文件 (Ctrl+O)", on_click=self._choose_ovid_file
                         ),
                     ]
                 ),
@@ -2098,7 +2102,7 @@ class ConverterApp:
 
         ErrorDetailsDialog(
             self.page, self.clipboard, ErrorReport.from_job(job), on_edit=edit,
-        ).show()
+        ).show(self._show_dialog)
 
     def _play_completed_job(self, job_id: str) -> None:
         try:
@@ -2383,7 +2387,7 @@ class ConverterApp:
 
     def _show_logs(self, _):
         content = self.logger.read() or "当前还没有转换日志。"
-        self.page.show_dialog(
+        self._show_dialog(
             ft.AlertDialog(
                 title="转换日志",
                 content=ft.Container(
@@ -2878,7 +2882,7 @@ class ConverterApp:
             self._show_notice("请先载入一帧 OLED 预览。")
             return
         self.pixel_inspector = PixelInspector(self.page, self.preview_snapshot)
-        self.pixel_inspector.show()
+        self.pixel_inspector.show(self._show_dialog)
 
     def _set_preview_frame(
         self,
@@ -3475,7 +3479,7 @@ class ConverterApp:
                 await self._apply_trim_range(*values)
 
         start_field.on_submit = end_field.on_submit = apply
-        self.page.show_dialog(ft.AlertDialog(
+        self._show_dialog(ft.AlertDialog(
             modal=True,
             on_dismiss=dismiss,
             scrollable=True,
@@ -3531,7 +3535,7 @@ class ConverterApp:
             value = await asyncio.to_thread(suggested_threshold, gray, mode)
             if not self._threshold_context_is_current(context):
                 return
-            self.page.show_dialog(
+            self._show_dialog(
                 ft.AlertDialog(
                     title="自动阈值建议",
                     content=ft.Text(f"根据当前预览帧计算出的建议阈值为 {value}。是否应用？"),
@@ -3641,7 +3645,7 @@ class ConverterApp:
         )
         self.pending_preset_target = self.target_dropdown.value
         self.preset_name_field.value = ""
-        self.page.show_dialog(
+        self._show_dialog(
             ft.AlertDialog(
                 title="保存转换预设",
                 modal=True,
@@ -3698,7 +3702,7 @@ class ConverterApp:
                 callback()
             except (OSError, ValueError) as exc:
                 self._show_error("无法修改预设", exc)
-        self.page.show_dialog(ft.AlertDialog(
+        self._show_dialog(ft.AlertDialog(
             title=title,
             modal=True,
             content=ft.Text(message),
@@ -3950,14 +3954,24 @@ class ConverterApp:
             self.page.update()
 
     async def _on_keyboard_event(self, event: ft.KeyboardEvent) -> None:
-        if self.exit_dialog_open or event.alt or event.meta:
+        dialogs = getattr(self, "dialog_host", None)
+        if (
+            self.exit_dialog_open
+            or (dialogs is not None and dialogs.has_modal)
+            or event.alt
+            or event.meta
+        ):
             return
         key = str(event.key).casefold()
         if event.ctrl and key == "o":
-            await self._choose_file(None)
+            if self.page_index == 0:
+                await self._choose_file(None)
+            elif self.page_index == 1:
+                await self._choose_ovid_file(None)
         elif (
             event.ctrl
             and key in {"enter", "return", "numpad enter"}
+            and self.page_index == 0
             and not self.convert_button.disabled
         ):
             await self._start_conversion(None)
@@ -3982,26 +3996,40 @@ class ConverterApp:
             return
         if self.exit_dialog_open:
             return
-        self.exit_dialog_open = True
-        self.page.show_dialog(
-            ft.AlertDialog(
-                title="转换仍在进行",
-                icon=ft.Icon(ft.Icons.WARNING_AMBER),
-                content=ft.Text("现在退出会取消当前任务。程序会先清理临时文件，再关闭窗口。"),
-                actions=[
-                    ft.TextButton("继续转换", on_click=self._dismiss_exit_dialog),
-                    ft.FilledButton("停止并退出", on_click=self._confirm_exit),
-                ],
-            )
+        dialog = ft.AlertDialog(
+            title="转换仍在进行",
+            icon=ft.Icon(ft.Icons.WARNING_AMBER),
+            content=ft.Text("现在退出会取消当前任务。程序会先清理临时文件，再关闭窗口。"),
         )
 
-    def _dismiss_exit_dialog(self, _) -> None:
-        self.exit_dialog_open = False
-        self.page.pop_dialog()
+        async def confirm(_):
+            await self._confirm_exit(dialog)
 
-    async def _confirm_exit(self, _) -> None:
-        self.exit_dialog_open = False
-        self.page.pop_dialog()
+        dialog.on_dismiss = lambda _: self._exit_dialog_dismissed(dialog)
+        dialog.actions = [
+            ft.TextButton("继续转换", on_click=lambda _: self._dismiss_exit_dialog(dialog)),
+            ft.FilledButton("停止并退出", on_click=confirm),
+        ]
+        self._show_dialog(dialog)
+        self.exit_dialog = dialog
+        self.exit_dialog_open = True
+
+    def _exit_dialog_dismissed(self, dialog: ft.AlertDialog) -> None:
+        if self.exit_dialog is dialog:
+            self.exit_dialog_open = False
+            self.exit_dialog = None
+
+    def _dismiss_exit_dialog(self, dialog: ft.AlertDialog) -> bool:
+        if self.exit_dialog is not dialog or not self.exit_dialog_open:
+            return False
+        self._exit_dialog_dismissed(dialog)
+        dialog.open = False
+        self.page.update(dialog)
+        return True
+
+    async def _confirm_exit(self, dialog: ft.AlertDialog) -> None:
+        if not self._dismiss_exit_dialog(dialog):
+            return
         if not self.busy:
             await self._shutdown_and_exit()
             return
@@ -4093,13 +4121,18 @@ class ConverterApp:
                 changed = True
         return changed
 
+    def _show_dialog(self, dialog: ft.DialogControl) -> None:
+        if not hasattr(self, "dialog_host"):
+            self.dialog_host = DialogHost(self.page)
+        self.dialog_host.show(dialog)
+
     def _show_error(self, title: str, error: Exception) -> None:
         ErrorDetailsDialog(
             self.page, self.clipboard, ErrorReport.from_exception(title, error),
-        ).show()
+        ).show(self._show_dialog)
 
     def _show_message(self, title: str, message: str) -> None:
-        self.page.show_dialog(
+        self._show_dialog(
             ft.AlertDialog(
                 title=title,
                 icon=ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE),
@@ -4109,7 +4142,7 @@ class ConverterApp:
         )
 
     def _show_notice(self, message: str) -> None:
-        self.page.show_dialog(
+        self._show_dialog(
             ft.SnackBar(
                 content=ft.Text(message),
                 show_close_icon=True,

@@ -109,8 +109,8 @@ class ErrorDetailsDialog:
     def is_open(self) -> bool:
         return not self.closed and self.dialog.open
 
-    def show(self) -> None:
-        self.page.show_dialog(self.dialog)
+    def show(self, presenter: Callable[[ft.DialogControl], None] | None = None) -> None:
+        (presenter or self.page.show_dialog)(self.dialog)
 
     def dismiss(self, _=None) -> None:
         self.closed = True

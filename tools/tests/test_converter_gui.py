@@ -703,6 +703,7 @@ class ConverterGuiTests(unittest.TestCase):
     def test_keyboard_shortcuts_open_files_and_start_conversion(self) -> None:
         app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
         app.exit_dialog_open = False
+        app.page_index = 0
         app.convert_button = SimpleNamespace(disabled=False)
         app._choose_file = mock.AsyncMock()
         app._start_conversion = mock.AsyncMock()
