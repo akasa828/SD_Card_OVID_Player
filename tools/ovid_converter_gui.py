@@ -1027,7 +1027,9 @@ class ConverterApp:
         )
 
         self.progress_bar = ft.ProgressBar(value=0, visible=False)
-        self.progress_text = ft.Text("准备就绪", color=ft.Colors.ON_SURFACE_VARIANT)
+        self.progress_text = ft.Text(
+            "", color=ft.Colors.ON_SURFACE_VARIANT, visible=False,
+        )
         self.convert_button = ft.FilledButton(
             "转换所选",
             icon=ft.Icons.MOVIE,
@@ -1292,6 +1294,39 @@ class ConverterApp:
             col=12,
             key="preview-card",
         )
+        self.parameter_geometry_section = ft.Column(
+            [
+                ft.Text("画面与时间", weight=ft.FontWeight.W_600),
+                ft.ResponsiveRow(
+                    [
+                        self.width_field,
+                        self.height_field,
+                        self.fps_field,
+                    ]
+                ),
+                self.fit_dropdown,
+                self.target_dropdown,
+                self.screen_size_hint,
+                self.match_target_button,
+            ],
+            col=12,
+            spacing=12,
+        )
+        self.parameter_monochrome_section = ft.Column(
+            [
+                ft.Text("黑白处理", weight=ft.FontWeight.W_600),
+                self.dither_control,
+                ft.Row(
+                    [self.threshold_slider, self.threshold_field],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                ),
+                self.auto_threshold_menu,
+                self.invert_switch,
+            ],
+            col=12,
+            spacing=12,
+        )
         parameter_card = self._card(
             "转换参数",
             ft.Icons.TUNE,
@@ -1312,39 +1347,8 @@ class ConverterApp:
                 ),
                 ft.ResponsiveRow(
                     [
-                        ft.Column(
-                            [
-                                ft.Text("画面与时间", weight=ft.FontWeight.W_600),
-                                ft.ResponsiveRow(
-                                    [
-                                        self.width_field,
-                                        self.height_field,
-                                        self.fps_field,
-                                    ]
-                                ),
-                                self.fit_dropdown,
-                                self.target_dropdown,
-                                self.screen_size_hint,
-                                self.match_target_button,
-                            ],
-                            col={"xs": 12, "lg": 6},
-                            spacing=12,
-                        ),
-                        ft.Column(
-                            [
-                                ft.Text("黑白处理", weight=ft.FontWeight.W_600),
-                                self.dither_control,
-                                ft.Row(
-                                    [self.threshold_slider, self.threshold_field],
-                                    spacing=8,
-                                    vertical_alignment=ft.CrossAxisAlignment.START,
-                                ),
-                                self.auto_threshold_menu,
-                                self.invert_switch,
-                            ],
-                            col={"xs": 12, "lg": 6},
-                            spacing=12,
-                        ),
+                        self.parameter_geometry_section,
+                        self.parameter_monochrome_section,
                     ],
                     spacing=16,
                     run_spacing=16,
@@ -2283,6 +2287,7 @@ class ConverterApp:
         self.trim_error.visible = False
         self.trim_label.value = "单张图片无需裁剪"
         self.progress_text.value = ""
+        self.progress_text.visible = False
         self.progress_bar.value = 0.0
         self._load_default_editor_options()
         self._sync_convert_sections()
@@ -3251,6 +3256,7 @@ class ConverterApp:
         self.progress_bar.visible = True
         self.progress_bar.value = 0
         self.progress_text.value = f"正在准备 {len(jobs)} 个任务…"
+        self.progress_text.visible = True
         self.page.update()
         self.progress_render_task = asyncio.create_task(
             self._render_conversion_progress(revision, self.progress_finish_event)
@@ -4271,12 +4277,20 @@ class ConverterApp:
         content_width = width - 40 - (1 if compact else 89)
         split = content_width >= 960 and self.preview_card.visible and self.parameter_card.visible
         columns = 6 if split else 12
+        parameter_section_columns = 12 if split or content_width < 960 else 6
         changed = False
         for card in (self.preview_card, self.parameter_card):
             if card.col != columns or card.height is not None or card.content.content.scroll is not None:
                 card.col = columns
                 card.height = None
                 card.content.content.scroll = None
+                changed = True
+        for section in (
+            self.parameter_geometry_section,
+            self.parameter_monochrome_section,
+        ):
+            if section.col != parameter_section_columns:
+                section.col = parameter_section_columns
                 changed = True
         return changed
 

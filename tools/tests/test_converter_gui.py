@@ -155,12 +155,27 @@ class ConverterGuiTests(unittest.TestCase):
             self.assertEqual(6, card.col)
             self.assertIsNone(card.height)
             self.assertIsNone(card.content.content.scroll)
+        self.assertEqual(
+            (12, 12),
+            (app.parameter_geometry_section.col, app.parameter_monochrome_section.col),
+        )
         self.assertFalse(app._resize_editor_panels(1120, 760, False))
         self.assertTrue(app._resize_editor_panels(700, 600, True))
         for card in (app.preview_card, app.parameter_card):
             self.assertEqual(12, card.col)
             self.assertIsNone(card.height)
             self.assertIsNone(card.content.content.scroll)
+        self.assertEqual(
+            (12, 12),
+            (app.parameter_geometry_section.col, app.parameter_monochrome_section.col),
+        )
+
+        app.preview_card.visible = False
+        self.assertTrue(app._resize_editor_panels(1600, 1000, False))
+        self.assertEqual(
+            (6, 6),
+            (app.parameter_geometry_section.col, app.parameter_monochrome_section.col),
+        )
 
     @classmethod
     def controls_in(cls, root):

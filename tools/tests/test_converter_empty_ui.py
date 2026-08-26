@@ -118,6 +118,10 @@ class EmptyConverterTests(unittest.IsolatedAsyncioTestCase):
         for control in (app.preview_card, app.parameter_card, app.source_paths, app.task_card, app.task_bar):
             self.assertTrue(control.visible)
         self.assertEqual((6, 6), (app.preview_card.col, app.parameter_card.col))
+        self.assertEqual(
+            (12, 12),
+            (app.parameter_geometry_section.col, app.parameter_monochrome_section.col),
+        )
         app._show_error.assert_not_called()
 
     async def test_multiple_imports_share_preconfigured_options_then_edit_independently(self):
@@ -215,6 +219,11 @@ class EmptyConverterTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(12, app.parameter_card.col)
                 self.assertFalse(app.preview_card.visible)
                 self.assertIsNone(app.parameter_card.content.content.scroll)
+                expected = 6 if width >= 1120 else 12
+                self.assertEqual(
+                    (expected, expected),
+                    (app.parameter_geometry_section.col, app.parameter_monochrome_section.col),
+                )
 
     async def test_late_parameter_events_do_not_patch_hidden_controls(self):
         app = self.app
