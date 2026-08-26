@@ -8,11 +8,13 @@ import contextlib
 import json
 import math
 import os
+import re
 import threading
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
+from fractions import Fraction
 from pathlib import Path
 
 import flet as ft
@@ -155,6 +157,29 @@ def format_timestamp(seconds: float | int | None) -> str:
     if hours:
         return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{fraction:02d}"
     return f"{minutes:02d}:{whole_seconds:02d}.{fraction:02d}"
+
+
+def timeline_frame_at_or_after(seconds: float, fps: int) -> int:
+    return math.ceil(Fraction(str(seconds)).limit_denominator(1_000_000) * fps)
+
+
+def preview_frame_seconds(options: ConversionOptions, index: int) -> float:
+    first = timeline_frame_at_or_after(options.trim_start_seconds, options.fps)
+    return (first + options.skip_frames + max(0, index - 1)) / options.fps
+
+
+def parse_timestamp(text: str) -> float:
+    value = text.strip()
+    if not re.fullmatch(r"(?:[0-9]+:){0,2}[0-9]+(?:\.[0-9]+)?", value):
+        raise ValueError("请输入秒数、分:秒或时:分:秒，例如 2.5 或 00:02.50")
+    parts = value.split(":")
+    numbers = [float(part) for part in parts]
+    if len(parts) > 1 and any(number >= 60 for number in numbers[1:]):
+        raise ValueError("冒号后的分钟和秒须小于 60")
+    seconds = sum(number * 60 ** index for index, number in enumerate(reversed(numbers)))
+    if not math.isfinite(seconds):
+        raise ValueError("时间数值过大")
+    return seconds
 
 
 def parse_preview_fps(value: object) -> int:
@@ -870,13 +895,33 @@ class ConverterApp:
             on_change_end=self._on_trim_change,
         )
         self.trim_label = ft.Text("单张图片无需裁剪", color=ft.Colors.ON_SURFACE_VARIANT)
+        self.trim_error = ft.Text("", color=ft.Colors.ERROR, visible=False)
+        self.trim_actions = ft.Row(
+            [
+                ft.TextButton("精确裁剪", icon=ft.Icons.CONTENT_CUT, on_click=self._edit_trim_dialog),
+                ft.PopupMenuButton(
+                    icon=ft.Icons.MORE_HORIZ,
+                    tooltip="按预览位置裁剪或恢复完整范围",
+                    items=[
+                        ft.PopupMenuItem(content="以当前帧为起点", data="start", on_click=self._trim_at_playhead),
+                        ft.PopupMenuItem(content="以当前帧为终点（包含此帧）", data="end", on_click=self._trim_at_playhead),
+                        ft.PopupMenuItem(content="恢复完整范围", data="reset", on_click=self._trim_at_playhead),
+                    ],
+                ),
+            ],
+            spacing=4,
+            wrap=True,
+        )
         self.trim_controls = ft.Column(
             [
                 ft.Text("导出范围 · 仅此区间写入 BIN", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
                 self.trim_slider,
                 self.trim_label,
+                self.trim_error,
+                self.trim_actions,
             ],
             spacing=8,
+            visible=False,
         )
         self.preview_timeline = ft.Slider(
             min=0,
@@ -2046,6 +2091,9 @@ class ConverterApp:
         self.preview_timeline.visible = False
         self.preview_time_label.value = "00:00.00 / --:--.--"
         self.trim_slider.disabled = True
+        self.trim_controls.visible = False
+        self.trim_error.value = ""
+        self.trim_error.visible = False
         self.trim_label.value = "单张图片无需裁剪"
         self._load_default_editor_options()
         self._set_editor_locked(False)
@@ -2058,8 +2106,7 @@ class ConverterApp:
             self.preview_label,
             self.preview_timeline,
             self.preview_time_label,
-            self.trim_slider,
-            self.trim_label,
+            self.trim_controls,
         )
 
     async def _choose_directory(self, _):
@@ -2291,7 +2338,10 @@ class ConverterApp:
         self.preview_timeline_dragging = False
         self.trim_dragging = False
         self.resume_preview_after_drag = False
-        self.trim_slider.disabled = trim_end is None
+        self.trim_slider.disabled = True
+        self.trim_controls.visible = False
+        self.trim_error.value = ""
+        self.trim_error.visible = False
         self.trim_slider.min = 0
         self.trim_slider.max = max(1.0, trim_end or 1.0)
         self.trim_slider.start_value = max(0.0, trim_start)
@@ -2591,7 +2641,8 @@ class ConverterApp:
             if revision != self.preview_revision:
                 return False
             self.preview_label.value = "已到最后一帧"
-            self.page.update(self.preview_label)
+            if self.page_index == 0:
+                self.page.update(self.preview_label)
             return False
         except Exception as exc:
             if revision != self.preview_revision:
@@ -2650,23 +2701,11 @@ class ConverterApp:
         self.preview_image.src = data
         self.preview_label.value = label
         controls = [self.original_preview_image, self.preview_image, self.preview_label]
-        position = None
-        if (
-            index is not None
-            and self.preview_timeline.visible
-            and self.preview.options is not None
-            and not self.preview_timeline_dragging
-        ):
-            position = self.preview.options.trim_start_seconds + (index - 1) / max(
-                1, self.preview.options.fps
-            )
-            self.preview_timeline.value = min(self.preview_timeline.max, max(0.0, position))
-            controls.append(self.preview_timeline)
-        elif index is not None and self.preview.options is not None:
-            position = self.preview.options.trim_start_seconds + (index - 1) / max(
-                1, self.preview.options.fps
-            )
-        if position is not None:
+        if index is not None and self.preview.options is not None and not self.preview_timeline_dragging:
+            position = preview_frame_seconds(self.preview.options, index)
+            if self.preview_timeline.visible:
+                self.preview_timeline.value = min(self.preview_timeline.max, max(0.0, position))
+                controls.append(self.preview_timeline)
             total = self.source_info.duration_seconds if self.source_info is not None else None
             self.preview_time_label.value = (
                 f"{format_timestamp(position)} / {format_timestamp(total)}"
@@ -2676,15 +2715,18 @@ class ConverterApp:
             self.page.update(*controls)
 
     def _pause_preview_for_drag(self) -> None:
-        self.resume_preview_after_drag = self.preview_playing
+        self.resume_preview_after_drag = self.preview_playing or self.resume_preview_after_drag
         self.preview_playing = False
         self.preview_playback_revision += 1
         self.preview_revision += 1
         self.preview_render_revision += 1
         self.preview_play_button.icon = ft.Icons.PLAY_ARROW
-        self.page.update(self.preview_play_button)
+        if self.page_index == 0:
+            self.page.update(self.preview_play_button)
 
     def _trim_drag_start(self, _) -> None:
+        if self.trim_slider.disabled or not self._can_edit_task(self.active_task_id):
+            return
         self.trim_dragging = True
         self._pause_preview_for_drag()
 
@@ -2704,7 +2746,8 @@ class ConverterApp:
             f"终点 {format_timestamp(end)}    "
             f"选中 {format_timestamp(max(0.0, end - start))}"
         )
-        self.page.update(self.trim_label)
+        if self.page_index == 0:
+            self.page.update(self.trim_label)
 
     def _preview_drag_start(self, _) -> None:
         self.preview_timeline_dragging = True
@@ -2721,7 +2764,8 @@ class ConverterApp:
             f"{format_timestamp(float(self.preview_timeline.value))} / "
             f"{format_timestamp(total)}"
         )
-        self.page.update(self.preview_time_label)
+        if self.page_index == 0:
+            self.page.update(self.preview_time_label)
 
     async def _preview_seek(self, event) -> None:
         if not self.source_field.value:
@@ -2735,17 +2779,16 @@ class ConverterApp:
             f"{format_timestamp(float(event.control.value))} / "
             f"{format_timestamp(self.source_info.duration_seconds if self.source_info else None)}"
         )
-        self.page.update(self.preview_time_label)
+        if self.page_index == 0:
+            self.page.update(self.preview_time_label)
         seek_hint = asyncio.create_task(self._show_seek_hint_after(revision))
         try:
             options = self._options(require_output=False)
-            position = max(float(self.trim_slider.start_value), float(event.control.value))
-            if not self.trim_slider.disabled:
-                latest = max(
-                    float(self.trim_slider.start_value),
-                    float(self.trim_slider.end_value) - 1 / options.fps,
-                )
-                position = min(position, latest)
+            first = timeline_frame_at_or_after(options.trim_start_seconds, options.fps) + options.skip_frames
+            end = options.trim_end_seconds or float(self.preview_timeline.max)
+            last = max(first, timeline_frame_at_or_after(end, options.fps) - 1)
+            selected = timeline_frame_at_or_after(float(event.control.value), options.fps)
+            position = min(last, max(first, selected)) / options.fps
             seek_options = replace(options, trim_start_seconds=position, skip_frames=0)
             async with self.preview_lock:
                 if revision != self.preview_revision:
@@ -2762,6 +2805,7 @@ class ConverterApp:
                 )
             if revision != self.preview_revision:
                 return
+            self.preview_timeline_dragging = False
             self._set_preview_frame(
                 original,
                 data,
@@ -2785,14 +2829,16 @@ class ConverterApp:
         await asyncio.sleep(0.15)
         if revision == self.preview_revision:
             self.preview_label.value = "正在定位…"
-            self.page.update(self.preview_label)
+            if self.page_index == 0:
+                self.page.update(self.preview_label)
 
     async def _toggle_preview_playback(self, _):
         if self.preview_playing:
             self.preview_playing = False
             self.preview_playback_revision += 1
             self.preview_play_button.icon = ft.Icons.PLAY_ARROW
-            self.page.update(self.preview_play_button)
+            if self.page_index == 0:
+                self.page.update(self.preview_play_button)
             return
         if not self.source_field.value:
             self._show_error("无法播放预览", ValueError("请先选择输入素材"))
@@ -2806,7 +2852,8 @@ class ConverterApp:
         playback_revision = self.preview_playback_revision
         self.preview_playing = True
         self.preview_play_button.icon = ft.Icons.STOP
-        self.page.update(self.preview_play_button)
+        if self.page_index == 0:
+            self.page.update(self.preview_play_button)
         loop = asyncio.get_running_loop()
         interval = 1.0 / fps
         deadline = loop.time()
@@ -2821,7 +2868,8 @@ class ConverterApp:
             if playback_revision == self.preview_playback_revision:
                 self.preview_playing = False
                 self.preview_play_button.icon = ft.Icons.PLAY_ARROW
-                self.page.update(self.preview_play_button)
+                if self.page_index == 0:
+                    self.page.update(self.preview_play_button)
 
     async def _start_conversion(self, _):
         if self.busy:
@@ -3069,21 +3117,21 @@ class ConverterApp:
             self.page.update(self.progress_text, self.task_action_status, self.cancel_button)
 
     def _configure_trim_timeline(self, info) -> None:
+        self.trim_error.value = ""
+        self.trim_error.visible = False
         if info.kind == "image" or not info.duration_seconds:
+            self.trim_controls.visible = False
             self.pending_trim_range = None
             self.preview_timeline.visible = False
             self.trim_slider.disabled = True
             self.trim_label.value = "单张图片无需裁剪"
             self.preview_time_label.value = "00:00.00 / 00:00.00"
-            self.page.update(
-                self.preview_timeline,
-                self.preview_time_label,
-                self.trim_slider,
-                self.trim_label,
-            )
+            if self.page_index == 0:
+                self.page.update(self.preview_timeline, self.preview_time_label, self.trim_controls)
             return
         duration = max(1 / max(1, int(self.fps_field.value)), info.duration_seconds)
         self.preview_timeline.visible = True
+        self.trim_controls.visible = True
         self.preview_timeline.min = 0
         self.preview_timeline.max = duration
         self.preview_timeline.value = 0
@@ -3101,30 +3149,174 @@ class ConverterApp:
         self.trim_slider.end_value = end
         self.preview_time_label.value = f"00:00.00 / {format_timestamp(duration)}"
         self._update_trim_label()
-        self.page.update(
-            self.preview_timeline,
-            self.preview_time_label,
-            self.trim_slider,
-            self.trim_label,
-        )
+        if self.page_index == 0:
+            self.page.update(self.preview_timeline, self.preview_time_label, self.trim_controls)
 
-    async def _on_trim_change(self, _):
+    def _restore_trim_range(self) -> None:
+        try:
+            options = self.queue.find(self.active_task_id).options
+        except KeyError:
+            return
+        self.trim_slider.start_value = options.trim_start_seconds
+        self.trim_slider.end_value = options.trim_end_seconds or self.trim_slider.max
         self._update_trim_label()
-        self.preview_revision += 1
+        if self.page_index == 0:
+            self.page.update(self.trim_slider)
+
+    def _validate_trim_range(self, start: float, end: float) -> None:
+        if not math.isfinite(start) or not 0 <= start < self.trim_slider.max:
+            raise ValueError("起点须在素材时长内")
+        if not math.isfinite(end) or not start < end <= self.trim_slider.max:
+            raise ValueError("终点须晚于起点，且不能超过素材时长")
+        fps = parse_preview_fps(self.fps_field.value)
+        first = timeline_frame_at_or_after(start, fps) + int(self.skip_frames_field.value)
+        last = timeline_frame_at_or_after(end, fps)
+        if self.source_info.frame_count is not None:
+            last = min(last, self.source_info.frame_count)
+        if first >= last:
+            raise ValueError("此范围按当前 FPS 和跳帧设置没有画面，请扩大范围")
+
+    async def _apply_trim_range(self, start: float, end: float) -> bool:
+        if self.trim_slider.disabled or not self._can_edit_task(self.active_task_id):
+            return False
+        try:
+            self._validate_trim_range(start, end)
+            if not self._validate_editor_numbers():
+                raise ValueError("请先修正转换参数中的数字")
+        except (ValueError, TypeError) as exc:
+            self.trim_error.value = str(exc)
+            self.trim_error.visible = True
+            if self.page_index == 0:
+                self.page.update(self.trim_error)
+            return False
+        self.trim_slider.start_value, self.trim_slider.end_value = start, end
+        if not self._save_active_task_options():
+            self._restore_trim_range()
+            self.trim_error.value = "无法保存范围，请检查当前任务和输出位置"
+            self.trim_error.visible = True
+            if self.page_index == 0:
+                self.page.update(self.trim_error)
+            return False
+        self.trim_error.value = ""
+        self.trim_error.visible = False
+        self._update_trim_label()
+        if self.page_index == 0:
+            self.page.update(self.trim_controls)
+        self._refresh_queue_view()
+        self._pause_preview_for_drag()
         revision = self.preview_revision
         try:
-            if self.source_field.value:
-                await self._load_first_preview()
-                if revision != self.preview_revision:
-                    return
-                self._save_active_task_options()
-                self._refresh_queue_view()
+            await self._load_first_preview()
         finally:
             if revision == self.preview_revision:
-                self.trim_dragging = False
-                if self.resume_preview_after_drag:
-                    self.resume_preview_after_drag = False
-                    await self._toggle_preview_playback(None)
+                await self._finish_trim_edit()
+        return True
+
+    async def _finish_trim_edit(self) -> None:
+        self.trim_dragging = False
+        if self.resume_preview_after_drag:
+            self.resume_preview_after_drag = False
+            await self._toggle_preview_playback(None)
+
+    async def _on_trim_change(self, _):
+        start, end = float(self.trim_slider.start_value), float(self.trim_slider.end_value)
+        if not await self._apply_trim_range(start, end):
+            self._restore_trim_range()
+            await self._finish_trim_edit()
+
+    def _edit_trim_dialog(self, _) -> None:
+        if self.trim_slider.disabled or not self._can_edit_task(self.active_task_id):
+            return
+        context = (self.active_task_id, self.preview_revision)
+        original = (float(self.trim_slider.start_value), float(self.trim_slider.end_value))
+        labels = tuple(format_timestamp(value) for value in original)
+        start_field = ft.TextField(label="起点（包含）", value=labels[0], autofocus=True)
+        end_field = ft.TextField(label="终点（不包含）", value=labels[1])
+        range_error = ft.Text("", color=ft.Colors.ERROR, visible=False)
+        closed = False
+
+        def dismiss(_=None):
+            nonlocal closed
+            closed = True
+
+        def close(_=None):
+            if not closed:
+                dismiss()
+                self.page.pop_dialog()
+
+        async def apply(_):
+            if closed:
+                return
+            if context != (self.active_task_id, self.preview_revision) or not self._can_edit_task(context[0]):
+                close()
+                self._show_notice("任务或预览已变化，请重新打开裁剪设置。")
+                return
+            values = []
+            for field, label, exact in zip((start_field, end_field), labels, original):
+                try:
+                    values.append(exact if field.value == label else parse_timestamp(field.value or ""))
+                    field.error = None
+                except ValueError as exc:
+                    field.error = str(exc)
+            range_error.visible = False
+            if len(values) != 2:
+                self.page.update(start_field, end_field, range_error)
+                return
+            try:
+                self._validate_trim_range(*values)
+                if not self._validate_editor_numbers():
+                    raise ValueError("请先修正转换参数中的数字")
+            except (ValueError, TypeError) as exc:
+                range_error.value, range_error.visible = str(exc), True
+                self.page.update(start_field, end_field, range_error)
+                return
+            close()
+            if values != list(original):
+                await self._apply_trim_range(*values)
+
+        start_field.on_submit = end_field.on_submit = apply
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            on_dismiss=dismiss,
+            scrollable=True,
+            title=ft.Text("精确裁剪"),
+            content=ft.Column([
+                ft.Text(f"素材总时长 {format_timestamp(self.trim_slider.max)}"),
+                start_field,
+                end_field,
+                ft.Text("支持秒数或分:秒，例如 2.5、00:02.50。起点包含，终点不包含。",
+                        size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                range_error,
+            ], tight=True, spacing=12),
+            actions=[
+                ft.TextButton("取消", on_click=close),
+                ft.FilledButton("应用范围", on_click=apply),
+            ],
+        ))
+
+    async def _trim_at_playhead(self, event) -> None:
+        if self.trim_slider.disabled or not self._can_edit_task(self.active_task_id):
+            return
+        start, end = float(self.trim_slider.start_value), float(self.trim_slider.end_value)
+        action = event.control.data
+        if action == "reset":
+            start, end = 0.0, float(self.trim_slider.max)
+        elif not self.preview_timeline_dragging:
+            position = float(self.preview_timeline.value)
+            if action == "start":
+                start = position
+            elif action == "end":
+                if not self._validate_editor_numbers():
+                    self._show_notice("请先修正转换参数中的数字")
+                    return
+                fps = int(self.fps_field.value)
+                end = min(float(self.trim_slider.max), position + 1 / fps)
+            else:
+                return
+        else:
+            return
+        if (start, end) != (self.trim_slider.start_value, self.trim_slider.end_value):
+            await self._apply_trim_range(start, end)
 
     async def _auto_threshold_clicked(self, event) -> None:
         await self._auto_threshold(str(event.control.data))
