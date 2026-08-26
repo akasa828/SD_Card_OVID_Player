@@ -368,7 +368,7 @@ class ConverterGuiTests(unittest.TestCase):
         app.conversion_revision = 1
         app.latest_conversion_progress = (
             1,
-            converter_gui.ConversionProgress(25, 100, 4096),
+            converter_gui.BatchDisplayProgress("clip.png", 0, 1, converter_gui.ConversionProgress(25, 100, 4096)),
         )
         app.progress_display_ratio = 0.0
         app.progress_finish_deadline = None

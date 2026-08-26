@@ -286,6 +286,47 @@ def batch_result_text(completed: int, total: int) -> str:
     return f"本轮完成：{completed}/{total} 个任务"
 
 
+@dataclass(frozen=True)
+class BatchDisplayProgress:
+    file_name: str
+    processed_tasks: int
+    total_tasks: int
+    current: ConversionProgress | None = None
+
+    @property
+    def ratio(self) -> float | None:
+        if self.total_tasks <= 0:
+            return 0.0
+        current_ratio = self.current.ratio if self.current is not None else 0.0
+        if current_ratio is None:
+            return None
+        return min(1.0, (self.processed_tasks + current_ratio) / self.total_tasks)
+
+    def text(self) -> str:
+        count = f"已处理 {self.processed_tasks}/{self.total_tasks} 项"
+        if self.current is None:
+            if self.processed_tasks >= self.total_tasks:
+                return f"{count} · 正在汇总结果"
+            return f"{self.file_name} · {count} · 正在准备"
+        value = self.current
+        frames = (
+            f"本文件 {value.completed_frames}/{value.total_frames} 帧"
+            if value.total_frames
+            else f"本文件 {value.completed_frames} 帧（总数未知）"
+        )
+        overall = f" · 任务总进度 {self.ratio * 100:.1f}%" if self.ratio is not None else ""
+        eta = (
+            f" · 本文件剩余 {value.remaining_seconds:.1f} 秒"
+            if value.remaining_seconds is not None
+            else ""
+        )
+        return (
+            f"{self.file_name} · {count}{overall} · {frames} · "
+            f"当前输出 {human_size(value.output_bytes)} · "
+            f"{value.current_fps:.1f}/{value.average_fps:.1f} FPS{eta}"
+        )
+
+
 def parse_drop_paths(value: object) -> list[Path]:
     """Decode desktop_drop event data without exposing JSON errors to the UI."""
     if isinstance(value, str):
@@ -572,8 +613,6 @@ class ConverterApp:
         self.loading_task_controls = False
         self.pending_trim_range: tuple[float, float | None] | None = None
         self.batch_current_name = ""
-        self.batch_completed_count = 0
-        self.batch_total_count = 0
         self.logger = ConversionLogger()
         self.player = OvidPlaybackSession()
         self.source_info = None
@@ -594,7 +633,7 @@ class ConverterApp:
         self.preview_time_task: asyncio.Task | None = None
         self.preview_needs_reload = False
         self.conversion_revision = 0
-        self.latest_conversion_progress: tuple[int, ConversionProgress] | None = None
+        self.latest_conversion_progress: tuple[int, BatchDisplayProgress] | None = None
         self.progress_display_ratio = 0.0
         self.progress_finish_deadline: float | None = None
         self.progress_finish_event: asyncio.Event | None = None
@@ -1590,8 +1629,13 @@ class ConverterApp:
         start = format_timestamp(options.trim_start_seconds)
         end = format_timestamp(options.trim_end_seconds)
         if options.trim_end_seconds is None:
-            return "完整素材"
-        return f"{start}–{end}"
+            time_range = f"{start}–结尾" if options.trim_start_seconds > 0 else "完整素材"
+        else:
+            time_range = f"{start}–{end}"
+        if options.skip_frames:
+            skipped = f"跳过前 {options.skip_frames} 帧"
+            return skipped if time_range == "完整素材" else f"{time_range} · {skipped}"
+        return time_range
 
     def _queue_state_text(self, job: QueueJob) -> str:
         names = {
@@ -1835,7 +1879,10 @@ class ConverterApp:
         editor_controls = self._update_editor_context(active, len(applicable))
         if busy:
             current = getattr(self, "batch_current_name", "")
-            self.task_action_status.value = f"正在转换{f'：{current}' if current else ''}"
+            if getattr(self, "stop_batch_requested", False):
+                self.task_action_status.value = "正在停止本轮…"
+            else:
+                self.task_action_status.value = f"正在转换{f'：{current}' if current else ''}"
         elif selectable:
             self.task_action_status.value = f"已选择 {len(selectable)} 个任务"
         elif jobs:
@@ -2801,8 +2848,6 @@ class ConverterApp:
         self.current_batch_ids = tuple(job.id for job in jobs)
         self.stop_batch_requested = False
         self.batch_current_name = ""
-        self.batch_completed_count = 0
-        self.batch_total_count = len(jobs)
         self.conversion_revision += 1
         revision = self.conversion_revision
         self.latest_conversion_progress = None
@@ -2812,6 +2857,7 @@ class ConverterApp:
         self.queue_cancel_event.clear()
         self.convert_button.disabled = True
         self.cancel_button.visible = True
+        self.cancel_button.disabled = False
         self.progress_bar.visible = True
         self.progress_bar.value = 0
         self.progress_text.value = f"正在准备 {len(jobs)} 个任务…"
@@ -2820,6 +2866,7 @@ class ConverterApp:
             self._render_conversion_progress(revision, self.progress_finish_event)
         )
         completed = 0
+        processed = 0
         last_output: Path | None = None
         try:
             for job in jobs:
@@ -2827,7 +2874,10 @@ class ConverterApp:
                     break
                 self.active_queue_job_id = job.id
                 self.batch_current_name = job.options.source.name
-                self.batch_completed_count = completed
+                self.latest_conversion_progress = (
+                    revision,
+                    BatchDisplayProgress(self.batch_current_name, processed, len(jobs)),
+                )
                 self.queue_cancel_event.clear()
                 self.queue.update(job.id, state="running", error="")
                 self._refresh_queue_view()
@@ -2849,20 +2899,20 @@ class ConverterApp:
                     if job.options.source.suffix.lower() in VIDEO_SUFFIXES:
                         self.logger.event("ffmpeg", ffmpeg_version())
 
-                    def progress(value: ConversionProgress, *, current_job=job) -> None:
+                    def progress(
+                        value: ConversionProgress, *, current_job=job, processed_before=processed,
+                    ) -> None:
+                        if (
+                            revision != self.conversion_revision
+                            or self.stop_batch_requested
+                            or self.active_queue_job_id != current_job.id
+                        ):
+                            return
                         self.queue.update(current_job.id, progress=value)
-                        ratio = value.ratio
-                        aggregate = None if ratio is None else (completed + ratio) / len(jobs)
                         self.latest_conversion_progress = (
                             revision,
-                            ConversionProgress(
-                                round(aggregate * 1000) if aggregate is not None else completed,
-                                1000 if aggregate is not None else None,
-                                value.output_bytes,
-                                value.elapsed_seconds,
-                                value.current_fps,
-                                value.average_fps,
-                                value.remaining_seconds,
+                            BatchDisplayProgress(
+                                current_job.options.source.name, processed_before, len(jobs), value,
                             ),
                         )
 
@@ -2881,7 +2931,6 @@ class ConverterApp:
                     summary = await worker
                     self.queue.complete(job.id, summary)
                     completed += 1
-                    self.batch_completed_count = completed
                     last_output = summary.path
                     self.logger.event("convert", f"completed {summary.path}")
                 except ConversionCancelled:
@@ -2893,6 +2942,7 @@ class ConverterApp:
                     self.queue.update(job.id, state="failed", error=str(exc))
                     self.logger.event("convert", f"failed {job.options.source}: {exc}", level=40)
                 finally:
+                    processed += 1
                     self.queue.unfreeze(job.id)
                     self.active_queue_job_id = None
                     self._refresh_queue_view()
@@ -2901,7 +2951,7 @@ class ConverterApp:
                 loop = asyncio.get_running_loop()
                 self.latest_conversion_progress = (
                     revision,
-                    ConversionProgress(1000, 1000, 0),
+                    BatchDisplayProgress("", processed, len(jobs)),
                 )
                 self.progress_finish_deadline = loop.time() + PROGRESS_FINISH_SECONDS
                 with contextlib.suppress(TimeoutError):
@@ -2943,9 +2993,12 @@ class ConverterApp:
     ) -> None:
         loop = asyncio.get_running_loop()
         last_time = loop.time()
-        last_completed = -1
+        last_text = None
         try:
             while self.busy and revision == self.conversion_revision:
+                if getattr(self, "stop_batch_requested", False):
+                    await asyncio.sleep(PROGRESS_FRAME_INTERVAL)
+                    continue
                 now = loop.time()
                 elapsed = max(0.0, now - last_time)
                 last_time = now
@@ -2953,6 +3006,7 @@ class ConverterApp:
                 if current is not None and current[0] == revision:
                     value = current[1]
                     target = value.ratio
+                    previous_bar_value = self.progress_bar.value
                     if target is None:
                         self.progress_bar.value = None
                     elif self.progress_finish_deadline is not None:
@@ -2973,35 +3027,13 @@ class ConverterApp:
                         )
                         self.progress_bar.value = self.progress_display_ratio
 
-                    if target is None:
-                        text = (
-                            f"{getattr(self, 'batch_current_name', '')} · "
-                            f"已完成 {getattr(self, 'batch_completed_count', 0)}/"
-                            f"{getattr(self, 'batch_total_count', 0)} 项 · "
-                            f"已转换 {value.completed_frames} 帧 · "
-                            f"{human_size(value.output_bytes)} · "
-                            f"{value.current_fps:.1f} FPS"
-                        )
-                    else:
-                        eta = (
-                            f" · 剩余 {value.remaining_seconds:.1f} 秒"
-                            if value.remaining_seconds is not None
-                            else ""
-                        )
-                        text = (
-                            f"{getattr(self, 'batch_current_name', '')} · "
-                            f"已完成 {getattr(self, 'batch_completed_count', 0)}/"
-                            f"{getattr(self, 'batch_total_count', 0)} 项 · "
-                            f"总进度 {target * 100:.1f}% · "
-                            f"{human_size(value.output_bytes)} · "
-                            f"{value.current_fps:.1f}/{value.average_fps:.1f} FPS{eta}"
-                        )
-                    text_changed = value.completed_frames != last_completed
+                    text = value.text()
+                    text_changed = text != last_text
                     if text_changed:
                         self.progress_text.value = text
-                        last_completed = value.completed_frames
+                        last_text = text
                     if self.page_index == 0 and (
-                        target is not None or text_changed
+                        self.progress_bar.value != previous_bar_value or text_changed
                     ):
                         self.page.update(self.progress_bar, self.progress_text)
 
@@ -3030,9 +3062,11 @@ class ConverterApp:
     def _cancel_conversion(self, _):
         self.stop_batch_requested = True
         self.queue_cancel_event.set()
+        self.cancel_button.disabled = True
+        self.task_action_status.value = "正在停止本轮…"
         self.progress_text.value = "正在停止本轮…"
         if self.page_index == 0:
-            self.page.update(self.progress_text)
+            self.page.update(self.progress_text, self.task_action_status, self.cancel_button)
 
     def _configure_trim_timeline(self, info) -> None:
         if info.kind == "image" or not info.duration_seconds:
