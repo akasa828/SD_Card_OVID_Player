@@ -368,6 +368,8 @@ def load_settings() -> AppSettings:
     path = settings_file()
     try:
         values = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(values, dict):
+            return AppSettings()
         return AppSettings(
             width=min(255, max(1, int(values.get("width", 128)))),
             height=min(255, max(1, int(values.get("height", 64)))),
@@ -742,6 +744,19 @@ class ConverterApp:
         )
         self.force_switch = ft.Switch(
             label="允许覆盖已有输出", value=False, on_change=self._on_task_option_change
+        )
+        self.task_worker_dropdown = ft.Dropdown(
+            label="此任务的图像处理线程",
+            value=str(self.settings.workers),
+            options=[ft.DropdownOption(key="0", text="自动")]
+            + [ft.DropdownOption(key=str(value), text=str(value)) for value in range(1, 9)],
+            on_select=self._on_task_option_change,
+        )
+        self.task_fast_video_switch = ft.Switch(
+            label="此任务使用快速视频模式",
+            tooltip="转换时可能选取临界时间点的相邻帧，不改变桌面预览方式。",
+            value=self.settings.fast_video,
+            on_change=self._on_task_option_change,
         )
         self.target_dropdown = ft.Dropdown(
             label="目标屏幕",
@@ -1194,6 +1209,8 @@ class ConverterApp:
                             run_spacing=12,
                         ),
                         ft.Row([self.recursive_switch, self.force_switch], wrap=True),
+                        self.task_worker_dropdown,
+                        self.task_fast_video_switch,
                         ft.OutlinedButton(
                             "重新载入预览",
                             icon=ft.Icons.REFRESH,
@@ -1341,6 +1358,14 @@ class ConverterApp:
         self.default_width = self._number_field("默认宽度", self.settings.width, 1, 255)
         self.default_height = self._number_field("默认高度", self.settings.height, 1, 255)
         self.default_fps = self._number_field("默认 FPS", self.settings.fps, 1, 120)
+        self.default_target = ft.Dropdown(
+            label="默认目标屏幕",
+            value=self.settings.target_profile,
+            options=[
+                ft.DropdownOption(key=key, text=value[0])
+                for key, value in TARGET_PROFILES.items()
+            ],
+        )
         self.worker_dropdown = ft.Dropdown(
             label="图像处理线程",
             value=str(self.settings.workers),
@@ -1373,7 +1398,13 @@ class ConverterApp:
                     "默认转换参数",
                     ft.Icons.TUNE,
                     [
+                        ft.Text(
+                            "默认值用于空任务列表与下次启动，不修改已有任务。"
+                            "继续添加素材时沿用当前任务的参数。",
+                            color=ft.Colors.ON_SURFACE_VARIANT,
+                        ),
                         ft.ResponsiveRow([self.default_width, self.default_height, self.default_fps]),
+                        self.default_target,
                         ft.Row([
                             self.default_output,
                             ft.IconButton(icon=ft.Icons.FOLDER_OPEN, on_click=self._choose_default_output),
@@ -1489,8 +1520,8 @@ class ConverterApp:
             skip_frames=int(self.skip_frames_field.value),
             trim_start_seconds=trim_start,
             trim_end_seconds=trim_end,
-            workers=self.settings.workers,
-            fast_video=self.settings.fast_video,
+            workers=int(self.task_worker_dropdown.value),
+            fast_video=bool(self.task_fast_video_switch.value),
         )
 
     async def _choose_file(self, _):
@@ -1971,6 +2002,7 @@ class ConverterApp:
         self.preview_time_label.value = "00:00.00 / --:--.--"
         self.trim_slider.disabled = True
         self.trim_label.value = "单张图片无需裁剪"
+        self._load_default_editor_options()
         self._set_editor_locked(False)
         self.page.update(
             self.source_field,
@@ -2215,8 +2247,7 @@ class ConverterApp:
         self.preview_label.value = "正在载入预览…"
         self.page.update()
 
-    def _load_job_controls(self, job: QueueJob) -> None:
-        options = job.options
+    def _load_option_controls(self, options: ConversionOptions, target_profile: str) -> None:
         self.loading_task_controls = True
         try:
             self.width_field.value = str(options.width)
@@ -2231,17 +2262,31 @@ class ConverterApp:
             self.background_dropdown.value = options.background
             self.recursive_switch.value = options.recursive
             self.force_switch.value = options.force
-            self.target_dropdown.value = job.target_profile
-            self.settings.workers = options.workers
-            self.settings.fast_video = options.fast_video
-            self._set_source(
-                options.source,
-                output=options.output,
-                trim_start=options.trim_start_seconds,
-                trim_end=options.trim_end_seconds,
-            )
+            self.target_dropdown.value = target_profile
+            self.task_worker_dropdown.value = str(options.workers)
+            self.task_fast_video_switch.value = options.fast_video
         finally:
             self.loading_task_controls = False
+
+    def _load_default_editor_options(self) -> None:
+        options = ConversionOptions(
+            Path(), Path("preview.bin"),
+            width=self.settings.width,
+            height=self.settings.height,
+            fps=self.settings.fps,
+            workers=self.settings.workers,
+            fast_video=self.settings.fast_video,
+        )
+        self._load_option_controls(options, self.settings.target_profile)
+
+    def _load_job_controls(self, job: QueueJob) -> None:
+        self._load_option_controls(job.options, job.target_profile)
+        self._set_source(
+            job.options.source,
+            output=job.options.output,
+            trim_start=job.options.trim_start_seconds,
+            trim_end=job.options.trim_end_seconds,
+        )
 
     async def _activate_task(self, job_id: str, *, scroll_target: str | None = None) -> None:
         if not self._save_editor_before_action():
@@ -2335,6 +2380,8 @@ class ConverterApp:
             self.invert_switch,
             self.recursive_switch,
             self.force_switch,
+            self.task_worker_dropdown,
+            self.task_fast_video_switch,
             self.target_dropdown,
             self.preset_dropdown,
             self.apply_selected_button,
@@ -3061,8 +3108,8 @@ class ConverterApp:
         self.background_dropdown.value = preset.background
         self.recursive_switch.value = preset.recursive
         self.target_dropdown.value = preset.target_profile
-        self.settings.workers = preset.workers
-        self.settings.fast_video = preset.fast_video
+        self.task_worker_dropdown.value = str(preset.workers)
+        self.task_fast_video_switch.value = preset.fast_video
         self.page.update()
         if self._save_active_task_options():
             self._refresh_queue_view()
@@ -3210,7 +3257,7 @@ class ConverterApp:
             fps = int(self.default_fps.value)
             if not (1 <= width <= 255 and 1 <= height <= 255 and 1 <= fps <= 120):
                 raise ValueError("宽高须在 1–255，FPS 须在 1–120")
-            self.settings = AppSettings(
+            updated = AppSettings(
                 width=width,
                 height=height,
                 fps=fps,
@@ -3218,17 +3265,16 @@ class ConverterApp:
                 theme=self.theme_dropdown.value,
                 workers=int(self.worker_dropdown.value),
                 fast_video=bool(self.fast_video_switch.value),
-                target_profile=self.target_dropdown.value,
+                target_profile=self.default_target.value,
             )
-            save_settings(self.settings)
-            self.width_field.value = str(width)
-            self.height_field.value = str(height)
-            self.fps_field.value = str(fps)
+            if not 0 <= updated.workers <= 8 or updated.target_profile not in TARGET_PROFILES:
+                raise ValueError("请选择有效的线程数和目标屏幕")
+            save_settings(updated)
+            self.settings = updated
+            if self.active_task_id is None:
+                self._load_default_editor_options()
             self._apply_theme(self.settings.theme)
-            if self.source_field.value:
-                self.preview_revision += 1
-                self.preview_needs_reload = True
-            self._show_message("设置已保存", "新的默认参数将在当前窗口和下次启动时使用。")
+            self._show_notice("默认设置已保存，已有任务和预览保持不变。")
         except Exception as exc:
             self._show_error("无法保存设置", exc)
 
