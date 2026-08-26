@@ -312,8 +312,8 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertNotIn("on_change", parameters)
 
     def test_geometry_preview_refresh_is_debounced(self) -> None:
-        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
-        app.source_field = SimpleNamespace(value="source.png")
+        app = self.make_editor()
+        app.source_field.value = "source.png"
         app.preview_revision = 0
         app.preview_playing = True
         app.preview_playback_revision = 0
@@ -324,11 +324,14 @@ class ConverterGuiTests(unittest.TestCase):
         app._validate_editor_numbers = mock.Mock(return_value=True)
 
         async def exercise() -> None:
-            with mock.patch.object(converter_gui.asyncio, "sleep", new=mock.AsyncMock()):
-                await app._on_geometry_change(None)
+            first = asyncio.create_task(app._on_geometry_change(None))
+            await asyncio.sleep(0)
+            await app._on_geometry_change(None)
+            await first
 
         asyncio.run(exercise())
         self.assertFalse(app.preview_playing)
+        self.assertEqual(2, app.preview_revision)
         options.validate.assert_called_once_with()
         app._load_first_preview.assert_awaited_once_with()
 

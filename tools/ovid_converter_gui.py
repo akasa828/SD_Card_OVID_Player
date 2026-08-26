@@ -38,6 +38,7 @@ from converter_services import (
     QueueJob,
     QueueSessionStore,
     check_compatibility,
+    screen_size_status,
     suggested_threshold,
 )
 from media2ovid import (
@@ -838,7 +839,13 @@ class ConverterApp:
                 ft.DropdownOption(key=key, text=value[0])
                 for key, value in TARGET_PROFILES.items()
             ],
-            on_select=self._on_task_option_change,
+            on_select=self._on_target_profile_change,
+        )
+        self.screen_size_hint = ft.Text(size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.match_target_button = ft.TextButton(
+            "使用设备尺寸", icon=ft.Icons.ASPECT_RATIO,
+            tooltip="仅点击此按钮才会修改输出宽高；其他参数不变",
+            on_click=self._match_target_size,
         )
         self.preset_dropdown = ft.Dropdown(
             label="转换预设",
@@ -1109,6 +1116,7 @@ class ConverterApp:
             vertical_alignment=ft.CrossAxisAlignment.STRETCH,
         )
         self._sync_preset_selection()
+        self._update_screen_size_hint(refresh=False)
 
     def _number_field(
         self,
@@ -1263,10 +1271,8 @@ class ConverterApp:
                                 ),
                                 self.fit_dropdown,
                                 self.target_dropdown,
-                                ft.Text(
-                                    "设备屏幕用于检查兼容性，不改变输出尺寸。",
-                                    size=12, color=ft.Colors.ON_SURFACE_VARIANT,
-                                ),
+                                self.screen_size_hint,
+                                self.match_target_button,
                             ],
                             col={"xs": 12, "lg": 6},
                             spacing=12,
@@ -2469,6 +2475,7 @@ class ConverterApp:
         finally:
             self.loading_task_controls = False
         self._sync_preset_selection()
+        self._update_screen_size_hint(refresh=False)
 
     def _load_default_editor_options(self) -> None:
         options = ConversionOptions(
@@ -2549,6 +2556,60 @@ class ConverterApp:
         if self._save_active_task_options():
             self._refresh_queue_view()
 
+    def _update_screen_size_hint(self, *, refresh: bool = True) -> None:
+        status = screen_size_status(
+            self.width_field.value, self.height_field.value, self.target_dropdown.value,
+        )
+        self.screen_size_hint.value = status.message
+        self.screen_size_hint.color = ft.Colors.ERROR if status.is_error else ft.Colors.ON_SURFACE_VARIANT
+        self.match_target_button.disabled = (
+            bool(self.parameter_card.disabled)
+            or (self.active_task_id is not None and not self._can_edit_task(self.active_task_id))
+            or status.target_size is None
+            or status.output_size == status.target_size
+        )
+        if refresh and self.page_index == 0:
+            self.page.update(self.screen_size_hint, self.match_target_button)
+
+    def _size_edit_allowed(self) -> bool:
+        if self.active_task_id is None:
+            return not self.parameter_card.disabled
+        if self._can_edit_task(self.active_task_id):
+            return True
+        try:
+            job = self.queue.find(self.active_task_id)
+        except KeyError:
+            return False
+        self._load_option_controls(job.options, job.target_profile)
+        self._set_editor_locked(True)
+        return False
+
+    def _on_target_profile_change(self, _) -> None:
+        if not self._size_edit_allowed():
+            return
+        self._update_screen_size_hint()
+        self._on_task_option_change(None)
+
+    async def _match_target_size(self, _) -> None:
+        if not self._size_edit_allowed():
+            return
+        status = screen_size_status(
+            self.width_field.value, self.height_field.value, self.target_dropdown.value,
+        )
+        if status.target_size is None or status.output_size == status.target_size:
+            return
+        self.width_field.value, self.height_field.value = map(str, status.target_size)
+        self.width_field.error = None
+        self.height_field.error = None
+        self._update_screen_size_hint(refresh=False)
+        self._sync_preset_selection()
+        if self.page_index == 0:
+            self.page.update(self.width_field, self.height_field, self.screen_size_hint,
+                             self.match_target_button, self.preset_dropdown)
+        if self._save_active_task_options():
+            self._refresh_queue_view()
+        await self._on_geometry_change(None)
+
     def _save_active_task_options(self) -> bool:
         if getattr(self, "loading_task_controls", False) or not getattr(
             self, "active_task_id", None
@@ -2599,6 +2660,7 @@ class ConverterApp:
             control.disabled = locked
         self._set_threshold_enabled(locked=locked)
         self.parameter_card.disabled = locked
+        self._update_screen_size_hint(refresh=False)
         self.trim_controls.disabled = locked
         self.output_button.disabled = locked
         if self.page_index == 0:
@@ -3564,6 +3626,7 @@ class ConverterApp:
         self.target_dropdown.value = preset.target_profile
         self.task_worker_dropdown.value = str(preset.workers)
         self.task_fast_video_switch.value = preset.fast_video
+        self._update_screen_size_hint(refresh=False)
         self.page.update()
         if self._save_active_task_options():
             self._refresh_queue_view()
@@ -3763,6 +3826,9 @@ class ConverterApp:
 
     async def _on_geometry_change(self, _):
         """Reload the preview when an option changes frame geometry or timing."""
+        if not self._size_edit_allowed():
+            return
+        self._update_screen_size_hint()
         if not self.source_field.value:
             return
         if not self._validate_editor_numbers():
@@ -3774,6 +3840,8 @@ class ConverterApp:
         self.preview_render_revision += 1
         await asyncio.sleep(0.12)
         if revision != self.preview_revision:
+            return
+        if not self._size_edit_allowed():
             return
         try:
             options = self._options(require_output=False)

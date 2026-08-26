@@ -28,6 +28,42 @@ TARGET_PROFILES = {
 }
 
 
+@dataclass(frozen=True)
+class ScreenSizeStatus:
+    message: str
+    is_error: bool
+    target_size: tuple[int, int] | None
+    output_size: tuple[int, int] | None
+
+
+def screen_size_status(width: object, height: object, target_profile: str) -> ScreenSizeStatus:
+    profile = TARGET_PROFILES.get(target_profile)
+    target = (profile[1], profile[2]) if profile and profile[1] and profile[2] else None
+    try:
+        output = (int(str(width)), int(str(height)))
+        if not all(1 <= dimension <= 255 for dimension in output):
+            raise ValueError
+    except (TypeError, ValueError):
+        return ScreenSizeStatus("输出宽高须为 1–255 的整数。", True, target, None)
+    size_text = f"{output[0]}×{output[1]}"
+    bytes_text = f"每帧 {frame_bytes(*output)} B"
+    if profile is None:
+        return ScreenSizeStatus("未知设备屏幕，请重新选择。", True, None, output)
+    if target is None:
+        return ScreenSizeStatus(f"自定义屏幕：未检查设备尺寸 · {bytes_text}", False, None, output)
+    target_text = f"{target[0]}×{target[1]}"
+    if output[0] > target[0] or output[1] > target[1]:
+        return ScreenSizeStatus(
+            f"输出 {size_text} 超过设备 {target_text}，请减小尺寸或选择对应设备。",
+            True, target, output,
+        )
+    message = (
+        f"{size_text} 与设备尺寸一致 · {bytes_text}"
+        if output == target else f"{size_text} 可在 {target_text} 居中显示 · {bytes_text}"
+    )
+    return ScreenSizeStatus(message, False, target, output)
+
+
 def application_data_dir() -> Path:
     root = os.getenv("FLET_APP_STORAGE_DATA")
     if root:
