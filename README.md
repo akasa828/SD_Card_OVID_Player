@@ -18,7 +18,7 @@
 </p>
 
 <p>
-  <a href="https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.2"><strong>下载 beta.2</strong></a> ·
+  <a href="https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.1"><strong>下载 v1.3.1</strong></a> ·
   <a href="#quick-start"><strong>快速开始</strong></a> ·
   <a href="#showcase"><strong>查看演示</strong></a>
 </p>
@@ -31,7 +31,7 @@
 
 仓库里还有一个 Windows 桌面转换器，可以直接把图片、GIF、视频或图片目录变成 OLED 能播放的 `.BIN` 文件。想了解这一路为什么越做越复杂，可以看[完整的项目初衷](docs/PROJECT_STORY.md)。
 
-这是个人学习和实验性质的嵌入式项目，目前主要在 STM32F103C8T6、SSD1306 OLED 和 SPI Micro SD 模块上测试。`v1.3.0-beta.2` 是最新测试版；如果只想使用已经发布的稳定固件，请选择 [`v1.2.2`](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.2.2)。
+这是个人学习和实验性质的嵌入式项目，目前主要在 STM32F103C8T6、SSD1306 OLED 和 SPI Micro SD 模块上测试。`v1.3.1` 是当前正式版本，包含播放器固件和 Windows OVID Converter。
 
 这是我在学习 STM32 过程中完成的实验项目。代码开发大量借助了 AI，但硬件接线、烧录测试、故障定位、需求设计和多轮改进由我实际参与完成。我正在继续理解和整理其中的实现。
 
@@ -73,10 +73,10 @@
 
 ## OVID Converter
 
-不想再经过 IrfanView、Img2Lcd 和中间 `.c/.h` 文件，可以直接下载 beta.2 转换器：
+不想再经过 IrfanView、Img2Lcd 和中间 `.c/.h` 文件，可以直接下载 v1.3.1 转换器：
 
-- [Windows x64 安装版](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.0-beta.2/OVID_Converter_Windows_x64_Setup_v1.3.0-beta.2.exe)
-- [Windows x64 便携版](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.0-beta.2/OVID_Converter_Windows_x64_Portable_v1.3.0-beta.2.zip)
+- [Windows x64 安装版](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.1/OVID_Converter_Windows_x64_Setup_v1.3.1.exe)
+- [Windows x64 便携版](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.1/OVID_Converter_Windows_x64_Portable_v1.3.1.zip)
 
 安装版会创建开始菜单入口，也可以选择桌面快捷方式；便携版解压后直接运行，不写入安装信息。两种版本都带有运行时、Pillow 和 FFmpeg，不要求另外安装 Python。
 
@@ -166,11 +166,11 @@ SD 卡根目录/
 
 ## 版本、贡献和许可证
 
-- **最新测试版：** [`v1.3.0-beta.2`](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.2)
-- **稳定固件：** [`v1.2.2`](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.2.2)
+- **最新正式版：** [`v1.3.1`](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.1)
+- **上一测试版：** [`v1.3.0-beta.2`](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.2)
 - **完整记录：** [CHANGELOG.md](CHANGELOG.md)
 
-beta.2 主要整理了转换器的双预览、时间轴和批量任务；它不会改变 OVID v2 文件格式，已有能在播放器中工作的 v2 文件无需重新转换。
+v1.3.1 继续完善了转换器的预览、裁剪、任务恢复、输出安全和响应式布局。它不会改变 OVID v2 文件格式，已有能在播放器中工作的 v2 文件无需重新转换。
 
 发现问题或有改进想法，可以提交 [Issue](https://github.com/akasa828/SD_Card_OVID_Player/issues)。准备修改代码时请先看 [CONTRIBUTING.md](CONTRIBUTING.md)；不适合公开的安全问题请按 [SECURITY.md](SECURITY.md) 报告。
 

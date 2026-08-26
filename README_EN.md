@@ -18,7 +18,7 @@
 </p>
 
 <p>
-  <a href="https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.2"><strong>Download beta.2</strong></a> ·
+  <a href="https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.1"><strong>Download v1.3.1</strong></a> ·
   <a href="#quick-start"><strong>Quick start</strong></a> ·
   <a href="#showcase"><strong>Watch the demo</strong></a>
 </p>
@@ -31,7 +31,7 @@ If you are looking for an STM32 SD card video player, SSD1306/SH1106 animation p
 
 The repository also includes a Windows converter that turns images, GIFs, videos, or image folders directly into OLED-ready `.BIN` files. The longer version of how the project grew is in [the project story](docs/PROJECT_STORY_EN.md).
 
-This remains a personal learning and experimental embedded project. It has mainly been tested with an STM32F103C8T6, an SSD1306 OLED, and an SPI Micro SD module. `v1.3.0-beta.2` is the newest test build; use [`v1.2.2`](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.2.2) if you only want the current stable firmware.
+This remains a personal learning and experimental embedded project. It has mainly been tested with an STM32F103C8T6, an SSD1306 OLED, and an SPI Micro SD module. `v1.3.1` is the current stable release and includes both the player firmware and the Windows OVID Converter.
 
 <a id="showcase"></a>
 
@@ -71,10 +71,10 @@ The first project setup needs internet access to download the STM32 tool Bundles
 
 ## OVID Converter
 
-If you do not need the old IrfanView, Img2Lcd, and intermediate `.c/.h` workflow, download the beta.2 converter:
+If you do not need the old IrfanView, Img2Lcd, and intermediate `.c/.h` workflow, download the v1.3.1 converter:
 
-- [Windows x64 installer](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.0-beta.2/OVID_Converter_Windows_x64_Setup_v1.3.0-beta.2.exe)
-- [Windows x64 portable build](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.0-beta.2/OVID_Converter_Windows_x64_Portable_v1.3.0-beta.2.zip)
+- [Windows x64 installer](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.1/OVID_Converter_Windows_x64_Setup_v1.3.1.exe)
+- [Windows x64 portable build](https://github.com/akasa828/SD_Card_OVID_Player/releases/download/v1.3.1/OVID_Converter_Windows_x64_Portable_v1.3.1.zip)
 
 The installer creates a Start Menu entry and can add a desktop shortcut. The portable build runs after extraction and writes no installation records. Both include the runtime, Pillow, and FFmpeg, so Python is not required.
 
@@ -164,11 +164,11 @@ The two drivers used by the player are also maintained as standalone projects:
 
 ## Versions, Contributing, and License
 
-- **Newest test build:** [`v1.3.0-beta.2`](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.2)
-- **Stable firmware:** [`v1.2.2`](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.2.2)
+- **Latest stable release:** [`v1.3.1`](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.1)
+- **Previous test build:** [`v1.3.0-beta.2`](https://github.com/akasa828/SD_Card_OVID_Player/releases/tag/v1.3.0-beta.2)
 - **Full history:** [CHANGELOG.md](CHANGELOG.md)
 
-beta.2 mainly reorganizes the converter's dual previews, timeline, and batch tasks. It does not change the OVID v2 file format, so existing v2 files that already work on the player do not need to be converted again.
+v1.3.1 continues the converter work with more reliable previews, trimming, task restoration, safe output handling, and responsive layouts. It does not change OVID v2, so existing v2 files that already work on the player do not need to be converted again.
 
 Bug reports and ideas are welcome in [GitHub Issues](https://github.com/akasa828/SD_Card_OVID_Player/issues). Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the code, and use [SECURITY.md](SECURITY.md) for reports that should not be public.
 
