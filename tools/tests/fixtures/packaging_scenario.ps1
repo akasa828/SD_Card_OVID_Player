@@ -16,9 +16,9 @@ try {
     foreach ($item in Get-ChildItem -LiteralPath (Join-Path $Root 'payload') -Force) {
         Copy-Item -LiteralPath $item.FullName -Destination $build.StageRoot -Recurse
     }
-    $names = @(Get-ConverterArtifactNames -Version '1.3.1' -WithInstaller:($Scenario -eq 'installer'))
+    $names = @(Get-ConverterArtifactNames -Version '1.3.2-beta.1' -WithInstaller:($Scenario -eq 'installer'))
     if ($Scenario -eq 'archive') {
-        New-ConverterArchive -PythonExecutable $PythonExecutable -AppRoot (Join-Path $build.StageRoot 'portable/OVID Converter') -ArchivePath (Join-Path $build.StageRoot 'OVID_Converter_Windows_x64_Portable_v1.3.1.zip')
+        New-ConverterArchive -PythonExecutable $PythonExecutable -AppRoot (Join-Path $build.StageRoot 'portable/OVID Converter') -ArchivePath (Join-Path $build.StageRoot 'OVID_Converter_Windows_x64_Portable_v1.3.2-beta.1.zip')
     }
     if ($Scenario -eq 'persistent-source-lock') {
         $sourceFile = Join-Path $build.StageRoot 'portable/OVID Converter/OVID Converter.exe'
@@ -38,7 +38,7 @@ try {
     if ($Scenario -eq 'overlap') { $names += 'portable' }
     if ($Scenario -in @('locked-zip', 'locked-exe', 'cleanup-failure')) {
         if ($Scenario -eq 'locked-zip') {
-            $locked = Join-Path $build.OutputRoot 'OVID_Converter_Windows_x64_Portable_v1.3.1.zip'
+            $locked = Join-Path $build.OutputRoot 'OVID_Converter_Windows_x64_Portable_v1.3.2-beta.1.zip'
         } elseif ($Scenario -eq 'locked-exe') {
             $locked = Join-Path $build.OutputRoot 'portable/OVID Converter/OVID Converter.exe'
         } else {

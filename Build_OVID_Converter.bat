@@ -131,7 +131,7 @@ echo   %TOOLS_DIR%\dist
 if defined INSTALLER_SKIPPED echo Setup.exe was skipped because Inno Setup 6 is not installed.
 echo.
 echo Optional command-line usage:
-echo   Build_OVID_Converter.bat 1.3.1 1.3.1.0
+echo   Build_OVID_Converter.bat 1.3.2-beta.1 1.3.2.1
 echo.
 pause
 exit /b 0

@@ -12,8 +12,8 @@ TOOLS = Path(__file__).resolve().parents[1]
 HELPERS = TOOLS / "converter_packaging.ps1"
 SCENARIO = Path(__file__).parent / "fixtures" / "packaging_scenario.ps1"
 POWERSHELL = shutil.which("powershell.exe")
-ARCHIVE = "OVID_Converter_Windows_x64_Portable_v1.3.1.zip"
-SETUP = "OVID_Converter_Windows_x64_Setup_v1.3.1.exe"
+ARCHIVE = "OVID_Converter_Windows_x64_Portable_v1.3.2-beta.1.zip"
+SETUP = "OVID_Converter_Windows_x64_Setup_v1.3.2-beta.1.exe"
 APP = "portable/OVID Converter/OVID Converter.exe"
 ARTIFACT_FILES = [APP, "licenses/MIT.txt", "THIRD_PARTY_NOTICES.txt", ARCHIVE]
 
