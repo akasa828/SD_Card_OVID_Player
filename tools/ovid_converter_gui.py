@@ -25,6 +25,7 @@ except ImportError:  # Local lightweight builds deliberately omit the Flutter ex
     FletDropZone = None
 
 from converter_version import DISPLAY_NAME, VERSION
+from converter_feedback import ErrorDetailsDialog, ErrorReport
 from converter_services import (
     BUILTIN_PRESETS,
     TARGET_PROFILES,
@@ -1748,12 +1749,33 @@ class ConverterApp:
             actions.append(
                 ft.IconButton(
                     icon=ft.Icons.REFRESH,
-                    tooltip="重试",
+                    tooltip="重新排队（之后点击转换所选）",
+                    disabled=job.frozen,
                     on_click=lambda _, job_id=job.id: self._retry_queue_job(job_id),
                 )
             )
+        if job.state == "failed":
+            actions.append(
+                ft.PopupMenuButton(
+                    icon=ft.Icons.MORE_VERT,
+                    tooltip="失败任务操作",
+                    items=[
+                        ft.PopupMenuItem(
+                            content="查看错误详情",
+                            icon=ft.Icons.ERROR_OUTLINE,
+                            on_click=lambda _, job_id=job.id: self._show_task_error(job_id),
+                        ),
+                        ft.PopupMenuItem(
+                            content="移除任务",
+                            icon=ft.Icons.DELETE_OUTLINE,
+                            disabled=job.frozen,
+                            on_click=lambda _, job_id=job.id: self._remove_queue_job(job_id),
+                        ),
+                    ],
+                )
+            )
         if (
-            job.state != "running"
+            job.state not in {"running", "failed"}
             and not job.frozen
             and not (job.state == "completed" and job.summary is not None)
         ):
@@ -1831,6 +1853,7 @@ class ConverterApp:
             job.state == "completed" and job.summary is not None,
             job.state in {"failed", "cancelled"},
             job.state != "running" and not job.frozen,
+            job.state == "failed",
         )
         signature = (
             job.options.source.name,
@@ -2008,9 +2031,56 @@ class ConverterApp:
         self._refresh_queue_view()
 
     def _retry_queue_job(self, job_id: str) -> None:
-        self.queue.retry(job_id)
-        self.queue.set_selected(job_id, True)
+        try:
+            job = self.queue.find(job_id)
+        except KeyError:
+            self._show_notice("任务已移除，无需重新排队。")
+            return
+        if job.state not in {"failed", "cancelled"}:
+            return
+        try:
+            self.queue.retry(job_id)
+            self.queue.set_selected(job_id, True)
+        except ValueError as exc:
+            self._show_notice(str(exc))
+            return
         self._refresh_queue_view()
+        self._show_notice("已重新排队并勾选，点击“转换所选”后开始。")
+
+    def _show_task_error(self, job_id: str) -> None:
+        try:
+            job = self.queue.find(job_id)
+        except KeyError:
+            self._show_notice("任务已移除，没有可查看的错误详情。")
+            return
+        if job.state != "failed":
+            self._show_notice("任务状态已变化，请查看列表中的最新状态。")
+            return
+
+        async def edit(feedback: ErrorDetailsDialog) -> None:
+            try:
+                current = self.queue.find(job_id)
+            except KeyError:
+                feedback.show_status("任务已移除；此处仍可复制当时的错误详情。", error=True)
+                return
+            if current.frozen or current.state == "running":
+                feedback.show_status("任务已加入本轮转换，结束后才能修改参数。", error=True)
+                return
+            if not self._save_editor_before_action():
+                feedback.show_status("请先关闭此窗口，修正当前编辑任务的参数。", error=True)
+                return
+            feedback.close()
+            try:
+                self._show_page(0)
+                await self._activate_task(
+                    job_id, scroll_target="parameter-card", preview_errors=False,
+                )
+            except Exception as exc:
+                self._show_error("无法打开任务参数", exc)
+
+        ErrorDetailsDialog(
+            self.page, self.clipboard, ErrorReport.from_job(job), on_edit=edit,
+        ).show()
 
     def _play_completed_job(self, job_id: str) -> None:
         try:
@@ -2404,7 +2474,9 @@ class ConverterApp:
             trim_end=job.options.trim_end_seconds,
         )
 
-    async def _activate_task(self, job_id: str, *, scroll_target: str | None = None) -> None:
+    async def _activate_task(
+        self, job_id: str, *, scroll_target: str | None = None, preview_errors: bool = True,
+    ) -> None:
         if not self._save_editor_before_action():
             return
         try:
@@ -2418,7 +2490,7 @@ class ConverterApp:
         if scroll_target:
             with contextlib.suppress(Exception):
                 await self.convert_scroll.scroll_to(key=scroll_target, duration=250)
-        await self._load_first_preview()
+        await self._load_first_preview(show_errors=preview_errors)
 
     def _validate_editor_numbers(self) -> bool:
         valid = True
@@ -2573,7 +2645,7 @@ class ConverterApp:
         self.preview_revision += 1
         await self._load_first_preview()
 
-    async def _load_first_preview(self):
+    async def _load_first_preview(self, *, show_errors: bool = True):
         self.preview_playing = False
         self.preview_playback_revision += 1
         self.preview_render_revision += 1
@@ -2616,7 +2688,14 @@ class ConverterApp:
         except Exception as exc:
             if revision != self.preview_revision:
                 return
-            self._show_error("无法预览素材", exc)
+            with contextlib.suppress(Exception):
+                await self._close_preview_if_current(revision)
+            if revision != self.preview_revision:
+                return
+            empty = self._empty_preview()
+            self._set_preview_frame(empty, empty, "预览不可用，请检查素材与参数")
+            if show_errors:
+                self._show_error("无法预览素材", exc)
 
     async def _preview_first(self, _):
         self.preview_revision += 1
@@ -3888,14 +3967,9 @@ class ConverterApp:
         return changed
 
     def _show_error(self, title: str, error: Exception) -> None:
-        self.page.show_dialog(
-            ft.AlertDialog(
-                title=title,
-                icon=ft.Icon(ft.Icons.ERROR_OUTLINE),
-                content=ft.Text(str(error)),
-                actions=[ft.Button("确定", on_click=lambda _: self.page.pop_dialog())],
-            )
-        )
+        ErrorDetailsDialog(
+            self.page, self.clipboard, ErrorReport.from_exception(title, error),
+        ).show()
 
     def _show_message(self, title: str, message: str) -> None:
         self.page.show_dialog(
