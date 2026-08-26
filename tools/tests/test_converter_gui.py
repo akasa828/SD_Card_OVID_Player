@@ -31,6 +31,7 @@ class ConverterGuiTests(unittest.TestCase):
         app.page = SimpleNamespace(update=mock.Mock())
         app.queue = converter_gui.ConversionQueue()
         app.active_task_id = None
+        app.pending_trim_range = None
         app.page_index = 0
         app._build_controls()
         return app

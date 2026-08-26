@@ -580,6 +580,7 @@ class ConverterApp:
         self.active_queue_job_id: str | None = None
         self.preview = PreviewSession()
         self.preview_lock = asyncio.Lock()
+        self.preview_close_task: asyncio.Task | None = None
         self.preview_revision = 0
         self.preview_playback_revision = 0
         self.preview_render_revision = 0
@@ -1465,9 +1466,13 @@ class ConverterApp:
         *,
         use_current_trim: bool = True,
     ) -> ConversionOptions:
-        trim_enabled = use_current_trim and not self.trim_slider.disabled
-        trim_start = float(self.trim_slider.start_value) if trim_enabled else 0.0
-        trim_end = float(self.trim_slider.end_value) if trim_enabled else None
+        trim_start, trim_end = 0.0, None
+        if use_current_trim:
+            if self.pending_trim_range is not None:
+                trim_start, trim_end = self.pending_trim_range
+            elif not self.trim_slider.disabled:
+                trim_start = float(self.trim_slider.start_value)
+                trim_end = float(self.trim_slider.end_value)
         return ConversionOptions(
             source=source,
             output=output,
@@ -1950,7 +1955,10 @@ class ConverterApp:
         self.preview_playback_revision += 1
         self.preview_render_revision += 1
         self.preview_revision += 1
-        self.preview.close()
+        self.preview_close_task = asyncio.create_task(
+            self._close_preview_if_current(self.preview_revision)
+        )
+        self.pending_trim_range = None
         self.source_info = None
         self.source_info_key = None
         self.source_field.value = ""
@@ -2192,6 +2200,9 @@ class ConverterApp:
         self.source_info = None
         self.source_info_key = None
         self.pending_trim_range = (trim_start, trim_end)
+        self.preview_timeline_dragging = False
+        self.trim_dragging = False
+        self.resume_preview_after_drag = False
         self.trim_slider.disabled = trim_end is None
         self.trim_slider.min = 0
         self.trim_slider.max = max(1.0, trim_end or 1.0)
@@ -2370,6 +2381,8 @@ class ConverterApp:
 
     async def _source_info_for_options(self, options: ConversionOptions):
         key = (str(options.source.resolve()), options.fps, options.recursive)
+        revision = self.preview_revision
+        source_info = self.source_info
         if self.source_info is None or self.source_info_key != key:
             metadata_options = replace(
                 options,
@@ -2377,9 +2390,16 @@ class ConverterApp:
                 trim_end_seconds=None,
                 skip_frames=0,
             )
-            self.source_info = await asyncio.to_thread(probe_source, metadata_options)
-            self.source_info_key = key
-        return trim_source_info(self.source_info, options)
+            source_info = await asyncio.to_thread(probe_source, metadata_options)
+            if revision == self.preview_revision:
+                self.source_info = source_info
+                self.source_info_key = key
+        return trim_source_info(source_info, options)
+
+    async def _close_preview_if_current(self, revision: int) -> None:
+        async with self.preview_lock:
+            if revision == self.preview_revision:
+                await asyncio.to_thread(self.preview.close)
 
     async def _refresh_preview(self, _=None):
         self.preview_revision += 1
@@ -2396,9 +2416,17 @@ class ConverterApp:
             options = self._options(require_output=False)
             first_probe = self.source_info is None
             async with self.preview_lock:
+                if revision != self.preview_revision:
+                    return
                 await asyncio.to_thread(self.preview.close)
+                if revision != self.preview_revision:
+                    return
                 info = await self._source_info_for_options(options)
+                if revision != self.preview_revision:
+                    return
                 await asyncio.to_thread(self.preview.reset, options, info)
+                if revision != self.preview_revision:
+                    return
                 original, data, index = await asyncio.to_thread(self.preview.next_frame)
             if revision != self.preview_revision:
                 return
@@ -2425,6 +2453,8 @@ class ConverterApp:
         revision = self.preview_revision
         try:
             async with self.preview_lock:
+                if revision != self.preview_revision:
+                    return False
                 original, data, index = await asyncio.to_thread(self.preview.next_frame)
             if revision != self.preview_revision:
                 return False
@@ -2446,7 +2476,9 @@ class ConverterApp:
         revision = self.preview_revision
         try:
             async with self.preview_lock:
-                original, data, index = self.preview.previous_frame()
+                if revision != self.preview_revision:
+                    return
+                original, data, index = await asyncio.to_thread(self.preview.previous_frame)
             if revision != self.preview_revision:
                 return
             self._set_preview_frame(original, data, f"第 {index} 帧", index=index)
@@ -2495,6 +2527,8 @@ class ConverterApp:
         self.resume_preview_after_drag = self.preview_playing
         self.preview_playing = False
         self.preview_playback_revision += 1
+        self.preview_revision += 1
+        self.preview_render_revision += 1
         self.preview_play_button.icon = ft.Icons.PLAY_ARROW
         self.page.update(self.preview_play_button)
 
@@ -2561,8 +2595,14 @@ class ConverterApp:
                 position = min(position, latest)
             seek_options = replace(options, trim_start_seconds=position, skip_frames=0)
             async with self.preview_lock:
+                if revision != self.preview_revision:
+                    return
                 info = await self._source_info_for_options(seek_options)
+                if revision != self.preview_revision:
+                    return
                 await asyncio.to_thread(self.preview.reset, seek_options, info)
+                if revision != self.preview_revision:
+                    return
                 original, data, index = await asyncio.to_thread(self.preview.next_frame)
             if revision != self.preview_revision:
                 return
@@ -2579,10 +2619,11 @@ class ConverterApp:
             seek_hint.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await seek_hint
-            self.preview_timeline_dragging = False
-            if self.resume_preview_after_drag and revision == self.preview_revision:
-                self.resume_preview_after_drag = False
-                await self._toggle_preview_playback(None)
+            if revision == self.preview_revision:
+                self.preview_timeline_dragging = False
+                if self.resume_preview_after_drag:
+                    self.resume_preview_after_drag = False
+                    await self._toggle_preview_playback(None)
 
     async def _show_seek_hint_after(self, revision: int) -> None:
         await asyncio.sleep(0.15)
@@ -2882,6 +2923,7 @@ class ConverterApp:
 
     def _configure_trim_timeline(self, info) -> None:
         if info.kind == "image" or not info.duration_seconds:
+            self.pending_trim_range = None
             self.preview_timeline.visible = False
             self.trim_slider.disabled = True
             self.trim_label.value = "单张图片无需裁剪"
@@ -2921,26 +2963,35 @@ class ConverterApp:
 
     async def _on_trim_change(self, _):
         self._update_trim_label()
+        self.preview_revision += 1
+        revision = self.preview_revision
         try:
             if self.source_field.value:
-                self.preview_revision += 1
                 await self._load_first_preview()
+                if revision != self.preview_revision:
+                    return
                 self._save_active_task_options()
                 self._refresh_queue_view()
         finally:
-            self.trim_dragging = False
-            if self.resume_preview_after_drag:
-                self.resume_preview_after_drag = False
-                await self._toggle_preview_playback(None)
+            if revision == self.preview_revision:
+                self.trim_dragging = False
+                if self.resume_preview_after_drag:
+                    self.resume_preview_after_drag = False
+                    await self._toggle_preview_playback(None)
 
     async def _auto_threshold_clicked(self, event) -> None:
         await self._auto_threshold(str(event.control.data))
 
     async def _auto_threshold(self, mode: str) -> None:
+        context = (self.active_task_id, self.preview_revision, self.preview_render_revision)
         try:
             async with self.preview_lock:
+                if not self._threshold_context_is_current(context):
+                    return
                 gray = self.preview.current_grayscale().copy()
             value = await asyncio.to_thread(suggested_threshold, gray, mode)
+            if not self._threshold_context_is_current(context):
+                return
             self.page.show_dialog(
                 ft.AlertDialog(
                     title="自动阈值建议",
@@ -2949,16 +3000,31 @@ class ConverterApp:
                         ft.TextButton("取消", on_click=lambda _: self.page.pop_dialog()),
                         ft.FilledButton(
                             "应用",
-                            on_click=lambda _: self._apply_threshold_suggestion(value),
+                            on_click=lambda _: self._apply_threshold_suggestion(value, context),
                         ),
                     ],
                 )
             )
         except Exception as exc:
-            self._show_error("无法分析自动阈值", exc)
+            if self._threshold_context_is_current(context):
+                self._show_error("无法分析自动阈值", exc)
 
-    def _apply_threshold_suggestion(self, value: int) -> None:
+    def _threshold_context_is_current(self, context: tuple[str | None, int, int]) -> bool:
+        if context != (self.active_task_id, self.preview_revision, self.preview_render_revision):
+            return False
+        try:
+            job = self.queue.find(context[0])
+        except KeyError:
+            return False
+        return not job.frozen and job.state != "running"
+
+    def _apply_threshold_suggestion(
+        self, value: int, context: tuple[str | None, int, int]
+    ) -> None:
         self.page.pop_dialog()
+        if not self._threshold_context_is_current(context):
+            self._show_notice("任务或预览已变化，请重新分析阈值。")
+            return
         self.dither_control.selected = ["threshold"]
         self.threshold_slider.disabled = False
         self.threshold_slider.value = value
@@ -3114,6 +3180,11 @@ class ConverterApp:
             dither = self.dither_control.selected[0]
             threshold = round(float(self.threshold_slider.value))
             async with self.preview_lock:
+                if (
+                    render_revision != self.preview_render_revision
+                    or source_revision != self.preview_revision
+                ):
+                    return
                 original, data, index = await asyncio.to_thread(
                     self.preview.rerender_current,
                     dither,
@@ -3264,7 +3335,7 @@ class ConverterApp:
         ):
             if task is not None and not task.done():
                 task.cancel()
-        self.preview.close()
+        await self._close_preview_if_current(self.preview_revision)
         self.player.close()
         if hasattr(self, "session_store"):
             with contextlib.suppress(OSError):
