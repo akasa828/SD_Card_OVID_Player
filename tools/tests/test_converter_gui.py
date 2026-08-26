@@ -110,6 +110,7 @@ class ConverterGuiTests(unittest.TestCase):
 
     def test_repeated_resize_updates_only_changed_preview_controls(self) -> None:
         app = self.make_editor()
+        app.preview_card.visible = app.parameter_card.visible = True
         app.compact_layout = None
         app.navigation_rail = converter_gui.ft.NavigationRail(destinations=[])
         app.navigation_bar = converter_gui.ft.NavigationBar(destinations=[])
@@ -148,6 +149,7 @@ class ConverterGuiTests(unittest.TestCase):
 
     def test_editor_panels_share_page_scrolling_and_stack_on_small_windows(self):
         app = self.make_editor()
+        app.preview_card.visible = app.parameter_card.visible = True
         self.assertTrue(app._resize_editor_panels(1120, 760, False))
         for card in (app.preview_card, app.parameter_card):
             self.assertEqual(6, card.col)
@@ -603,17 +605,9 @@ class ConverterGuiTests(unittest.TestCase):
             tuple(label for _, label in converter_gui.NAVIGATION_ITEMS),
         )
 
-        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
-        app.convert_page = object()
-        app.player_page = object()
-        app.settings_page = object()
-        app.about_page = object()
-        app.page_host = SimpleNamespace(content=None)
-        app.navigation_rail = SimpleNamespace(selected_index=None)
-        app.navigation_bar = SimpleNamespace(selected_index=None)
+        app = self.make_editor()
         app.preview_needs_reload = False
         app.busy = False
-        app.page = SimpleNamespace(update=lambda: None)
         app._show_page(99)
 
         self.assertEqual(0, app.page_index)
@@ -814,20 +808,8 @@ class ConverterGuiTests(unittest.TestCase):
         app._shutdown_and_exit.assert_awaited_once()
 
     def test_empty_queue_disables_conversion_action(self) -> None:
-        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
-        app.queue = converter_gui.ConversionQueue()
-        app.active_task_id = None
+        app = self.make_editor()
         app.busy = False
-        app.queue_list = converter_gui.ft.Column()
-        app.queue_status = converter_gui.ft.Text()
-        app.queue_empty_state = converter_gui.ft.Container()
-        app.convert_button = converter_gui.ft.FilledButton()
-        app.select_all_button = converter_gui.ft.TextButton()
-        app.select_none_button = converter_gui.ft.TextButton()
-        app.clear_completed_button = converter_gui.ft.TextButton()
-        app.apply_selected_button = converter_gui.ft.OutlinedButton()
-        app.task_action_status = converter_gui.ft.Text()
-        app.page = SimpleNamespace(update=mock.Mock())
 
         app._refresh_queue_view()
 
@@ -844,21 +826,9 @@ class ConverterGuiTests(unittest.TestCase):
         self.assertFalse(app.convert_button.disabled)
 
     def test_queue_refresh_reuses_existing_task_rows(self) -> None:
-        app = converter_gui.ConverterApp.__new__(converter_gui.ConverterApp)
-        app.queue = converter_gui.ConversionQueue()
+        app = self.make_editor()
         app.task_rows = {}
-        app.active_task_id = None
         app.busy = False
-        app.queue_list = converter_gui.ft.Column()
-        app.queue_status = converter_gui.ft.Text()
-        app.queue_empty_state = converter_gui.ft.Container()
-        app.convert_button = converter_gui.ft.FilledButton()
-        app.select_all_button = converter_gui.ft.TextButton()
-        app.select_none_button = converter_gui.ft.TextButton()
-        app.clear_completed_button = converter_gui.ft.TextButton()
-        app.apply_selected_button = converter_gui.ft.OutlinedButton()
-        app.task_action_status = converter_gui.ft.Text()
-        app.page = SimpleNamespace(update=mock.Mock())
         job = app.queue.add(
             converter_gui.ConversionOptions(Path("clip.mp4"), Path("clip.bin"))
         )

@@ -154,6 +154,8 @@ class PreviewModeTests(unittest.IsolatedAsyncioTestCase):
 
     def test_resize_in_single_mode_updates_only_the_visible_image(self):
         app = self.app
+        app.source_field.value = "clip.mp4"
+        app._sync_convert_sections()
         app.page.window = SimpleNamespace(width=1120, height=760)
         app.page.navigation_bar = None
         self.choose_mode("oled")

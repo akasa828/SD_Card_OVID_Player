@@ -764,6 +764,7 @@ class ConverterApp:
         self._on_resize()
 
     def _build_controls(self) -> None:
+        self.empty_editor_expanded = False
         self.editor_task_name = ft.Text(
             "尚未选择任务", weight=ft.FontWeight.W_500,
             max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
@@ -1063,7 +1064,7 @@ class ConverterApp:
                     ft.Icon(ft.Icons.VIDEO_FILE_OUTLINED, size=40, color=ft.Colors.OUTLINE),
                     ft.Text("还没有转换任务", size=16, weight=ft.FontWeight.W_500),
                     ft.Text(
-                        "使用上方“添加素材”或“添加图片目录”，然后勾选需要转换的任务。",
+                        "可导入图片、GIF 和视频；图片序列请选择“添加图片目录”。",
                         color=ft.Colors.ON_SURFACE_VARIANT,
                         text_align=ft.TextAlign.CENTER,
                     ),
@@ -1155,6 +1156,7 @@ class ConverterApp:
         )
         self._sync_preset_selection()
         self._update_screen_size_hint(refresh=False)
+        self._sync_convert_sections()
 
     def _number_field(
         self,
@@ -1195,9 +1197,9 @@ class ConverterApp:
         )
 
     def _build_convert_page(self):
-        source_actions = ft.Row(
+        self.source_actions = ft.Row(
             [
-                ft.OutlinedButton(
+                ft.FilledButton(
                     "添加素材",
                     icon=ft.Icons.ADD,
                     tooltip="添加图片、GIF 或视频，可多选 (Ctrl+O)",
@@ -1217,13 +1219,26 @@ class ConverterApp:
             ],
             col={"xs": 12, "md": 6},
         )
+        self.source_paths = ft.ResponsiveRow(
+            [self.source_field, output_actions], spacing=12, run_spacing=12,
+        )
+        self.empty_parameters_button = ft.TextButton(
+            "先设置转换参数", icon=ft.Icons.TUNE,
+            tooltip="可先调整新素材参数或保存预设，不需要导入文件",
+            on_click=self._toggle_empty_parameters,
+        )
+        self.empty_parameters_entry = ft.Row(
+            [self.empty_parameters_button], alignment=ft.MainAxisAlignment.CENTER,
+        )
         input_card = self._card(
             "素材与输出",
             ft.Icons.INSERT_DRIVE_FILE,
             [
                 *([self.drop_zone] if self.drop_zone is not None else []),
-                source_actions,
-                ft.ResponsiveRow([self.source_field, output_actions], spacing=12, run_spacing=12),
+                self.queue_empty_state,
+                self.source_actions,
+                self.source_paths,
+                self.empty_parameters_entry,
             ],
             col=12,
             key="source-card",
@@ -1365,7 +1380,7 @@ class ConverterApp:
             col=12,
             key="parameter-card",
         )
-        action_card = self._card(
+        self.task_card = self._card(
             "转换任务",
             ft.Icons.DATA_SAVER_ON,
             [
@@ -1378,7 +1393,6 @@ class ConverterApp:
                     wrap=True,
                 ),
                 self.queue_status,
-                self.queue_empty_state,
                 self.queue_list,
             ],
             col=12,
@@ -1393,7 +1407,7 @@ class ConverterApp:
             [
                 input_card,
                 self.editor_row,
-                action_card,
+                self.task_card,
             ],
             scroll=ft.ScrollMode.AUTO,
             expand=True,
@@ -1432,7 +1446,48 @@ class ConverterApp:
                 spacing=8,
             ),
         )
+        self.task_bar = task_bar
         return ft.Column([self.convert_scroll, task_bar], spacing=0, expand=True)
+
+    def _sync_convert_sections(self, *, has_jobs: bool | None = None) -> bool:
+        if has_jobs is None:
+            has_jobs = bool(self.queue.snapshot())
+        has_source = bool(self.source_field.value)
+        empty = not has_jobs and not has_source
+        show_parameters = has_source or (empty and self.empty_editor_expanded)
+        properties = (
+            (self.queue_empty_state, "visible", empty),
+            (self.source_paths, "visible", has_source),
+            (self.source_actions, "alignment", ft.MainAxisAlignment.CENTER if empty else ft.MainAxisAlignment.START),
+            (self.empty_parameters_button, "visible", empty),
+            (self.empty_parameters_entry, "visible", empty),
+            (self.empty_parameters_button, "content", "收起转换参数" if self.empty_editor_expanded else "先设置转换参数"),
+            (self.preview_card, "visible", has_source),
+            (self.parameter_card, "visible", show_parameters),
+            (self.editor_row, "visible", show_parameters),
+            (self.task_card, "visible", has_jobs),
+            (self.task_bar, "visible", has_jobs or bool(getattr(self, "busy", False))),
+            (self.apply_selected_button, "visible", has_jobs and has_source),
+        )
+        changed = False
+        for control, attribute, value in properties:
+            if getattr(control, attribute) != value:
+                setattr(control, attribute, value)
+                changed = True
+        if changed:
+            width = getattr(self.page, "width", None) or 1120
+            height = getattr(self.page, "height", None) or 760
+            self._resize_editor_panels(width, height, width < 800)
+        return changed
+
+    def _toggle_empty_parameters(self, _) -> None:
+        if self.queue.snapshot() or self.source_field.value:
+            return
+        self.empty_editor_expanded = not self.empty_editor_expanded
+        self._update_editor_context(None, 0)
+        self._sync_convert_sections(has_jobs=False)
+        if self.page_index == 0:
+            self.page.update(self.convert_page)
 
     def _build_player_page(self):
         return ft.Column(
@@ -1988,7 +2043,7 @@ class ConverterApp:
             and not job.frozen
         ]
         busy = bool(getattr(self, "busy", False))
-        self.queue_empty_state.visible = not jobs
+        sections_changed = self._sync_convert_sections(has_jobs=bool(jobs))
         self.convert_button.disabled = busy or not selectable
         self.select_all_button.disabled = not jobs
         self.select_none_button.disabled = not jobs
@@ -2014,23 +2069,24 @@ class ConverterApp:
             self.task_action_status.value = "请选择需要转换的任务"
         else:
             self.task_action_status.value = "添加素材后即可开始转换"
-        controls_to_update: list[ft.Control] = [
-            self.queue_status,
-            self.queue_empty_state,
-            self.convert_button,
-            self.select_all_button,
-            self.select_none_button,
-            self.clear_completed_button,
-            self.apply_selected_button,
-            self.task_action_status,
-            *editor_controls,
-        ]
-        if structure_changed:
-            controls_to_update.insert(0, self.queue_list)
-        else:
-            controls_to_update[0:0] = changed_rows
+        controls_to_update: list[ft.Control] = []
+        if self.task_card.visible:
+            controls_to_update.extend([
+                self.queue_status, self.select_all_button, self.select_none_button,
+                self.clear_completed_button,
+                *([self.queue_list] if structure_changed else changed_rows),
+            ])
+        if self.parameter_card.visible:
+            controls_to_update.extend(editor_controls)
+            if self.apply_selected_button.visible:
+                controls_to_update.append(self.apply_selected_button)
+        if self.task_bar.visible:
+            controls_to_update.extend([self.convert_button, self.task_action_status])
         if getattr(self, "page_index", 0) == 0:
-            self.page.update(*controls_to_update)
+            if sections_changed:
+                self.page.update(self.convert_page)
+            elif controls_to_update:
+                self.page.update(*controls_to_update)
         self._schedule_session_save()
 
     def _update_editor_context(self, active: QueueJob | None, other_count: int) -> list[ft.Control]:
@@ -2040,11 +2096,11 @@ class ConverterApp:
         if not hasattr(self, "editor_task_name"):
             return []
         self.editor_task_name.value = (
-            f"正在编辑：{active.options.source.name}" if active else "尚未选择任务"
+            f"正在编辑：{active.options.source.name}" if active else "新素材参数"
         )
         self.editor_task_name.tooltip = str(active.options.source) if active else None
         if active is None:
-            hint = "添加素材后，在这里单独调整它的参数。"
+            hint = "用于接下来添加的素材；保存为预设可在下次复用。"
         elif active.frozen or active.state == "running":
             hint = "此任务已加入本轮转换，参数暂时只读。"
         else:
@@ -2199,6 +2255,7 @@ class ConverterApp:
         self._refresh_queue_view()
 
     def _reset_editor_for_empty_queue(self) -> None:
+        self.empty_editor_expanded = False
         self.preview_playing = False
         self.preview_playback_revision += 1
         self.preview_render_revision += 1
@@ -2225,19 +2282,13 @@ class ConverterApp:
         self.trim_error.value = ""
         self.trim_error.visible = False
         self.trim_label.value = "单张图片无需裁剪"
+        self.progress_text.value = ""
+        self.progress_bar.value = 0.0
         self._load_default_editor_options()
+        self._sync_convert_sections()
         self._set_editor_locked(False)
-        self.page.update(
-            self.source_field,
-            self.output_field,
-            self.preview_play_button,
-            *self._visible_preview_images(),
-            self.inspect_preview_button,
-            self.preview_label,
-            self.preview_timeline,
-            self.preview_time_label,
-            self.trim_controls,
-        )
+        if self.page_index == 0:
+            self.page.update(self.convert_page)
 
     async def _choose_directory(self, _):
         selected = await self.file_picker.get_directory_path(dialog_title="选择图片帧目录")
@@ -2483,6 +2534,8 @@ class ConverterApp:
         output_dir = Path(self.settings.output_directory) if self.settings.output_directory else source.parent
         self.output_field.value = str(output or (output_dir / f"{source.stem}.BIN"))
         self.preview_label.value = "正在载入预览…"
+        self.empty_editor_expanded = False
+        self._sync_convert_sections()
         self.page.update()
 
     def _can_edit_task(self, job_id: str | None) -> bool:
@@ -2576,7 +2629,13 @@ class ConverterApp:
             if field.error != error:
                 field.error = error
                 changed.append(field)
-        if changed and self.page_index == 0:
+        if not valid and not self.parameter_card.visible and not self.queue.snapshot():
+            self.empty_editor_expanded = True
+            self._update_editor_context(None, 0)
+            self._sync_convert_sections()
+            if self.page_index == 0:
+                self.page.update(self.convert_page)
+        elif changed and self.page_index == 0 and self.parameter_card.visible:
             self.page.update(*changed)
         return valid
 
@@ -2608,7 +2667,7 @@ class ConverterApp:
             or status.target_size is None
             or status.output_size == status.target_size
         )
-        if refresh and self.page_index == 0:
+        if refresh and self.page_index == 0 and self.parameter_card.visible:
             self.page.update(self.screen_size_hint, self.match_target_button)
 
     def _size_edit_allowed(self) -> bool:
@@ -2643,7 +2702,7 @@ class ConverterApp:
         self.height_field.error = None
         self._update_screen_size_hint(refresh=False)
         self._sync_preset_selection()
-        if self.page_index == 0:
+        if self.page_index == 0 and self.parameter_card.visible:
             self.page.update(self.width_field, self.height_field, self.screen_size_hint,
                              self.match_target_button, self.preset_dropdown)
         if self._save_active_task_options():
@@ -2704,7 +2763,15 @@ class ConverterApp:
         self.trim_controls.disabled = locked
         self.output_button.disabled = locked
         if self.page_index == 0:
-            self.page.update(self.parameter_card, self.trim_controls, self.output_button)
+            visible_controls = []
+            if self.parameter_card.visible:
+                visible_controls.append(self.parameter_card)
+            if self.preview_card.visible and self.trim_controls.visible:
+                visible_controls.append(self.trim_controls)
+            if self.source_paths.visible:
+                visible_controls.append(self.output_button)
+            if visible_controls:
+                self.page.update(*visible_controls)
 
     def _apply_active_options_to_selected(self, _) -> None:
         if not self.active_task_id:
@@ -3854,7 +3921,7 @@ class ConverterApp:
         self.invert_switch.value = job.options.invert
         self._set_threshold_value(job.options.threshold)
         self._set_threshold_enabled(locked=True)
-        if self.page_index == 0:
+        if self.page_index == 0 and self.parameter_card.visible:
             self.page.update(
                 self.dither_control, self.threshold_slider, self.threshold_field, self.invert_switch
             )
@@ -3865,7 +3932,7 @@ class ConverterApp:
             return
         self._set_threshold_value(round(float(self.threshold_slider.value)))
         self._set_threshold_enabled()
-        if self.page_index == 0:
+        if self.page_index == 0 and self.parameter_card.visible:
             self.page.update(self.dither_control, self.threshold_slider, self.threshold_field)
         if self._save_active_task_options():
             self._refresh_queue_view()
@@ -3876,7 +3943,7 @@ class ConverterApp:
             return
         if self.dither_control.selected[0] != "threshold":
             self._set_threshold_value(round(float(self.threshold_slider.value)))
-            if self.page_index == 0:
+            if self.page_index == 0 and self.parameter_card.visible:
                 self.page.update(self.threshold_field)
             return
         try:
@@ -3886,7 +3953,7 @@ class ConverterApp:
             error = "请输入整数"
         self.threshold_field.error = error
         if error is not None:
-            if self.page_index == 0:
+            if self.page_index == 0 and self.parameter_card.visible:
                 self.page.update(self.threshold_field)
             return
         self.threshold_slider.value = value
@@ -3897,11 +3964,11 @@ class ConverterApp:
             return
         if self.dither_control.selected[0] != "threshold":
             self._set_threshold_value(int(self.threshold_field.value))
-            if self.page_index == 0:
+            if self.page_index == 0 and self.parameter_card.visible:
                 self.page.update(self.threshold_slider)
             return
         self._set_threshold_value(round(float(self.threshold_slider.value)))
-        if self.page_index == 0:
+        if self.page_index == 0 and self.parameter_card.visible:
             self.page.update(self.threshold_slider, self.threshold_field)
         if self._save_active_task_options():
             self._refresh_queue_view()
@@ -4165,6 +4232,8 @@ class ConverterApp:
         self.page_host.content = pages[index]
         self.navigation_rail.selected_index = index
         self.navigation_bar.selected_index = index
+        if index == 0:
+            self._sync_convert_sections()
         self.page.update()
         if index == 0 and self.preview_needs_reload and not self.busy:
             self.preview_needs_reload = False
@@ -4184,7 +4253,7 @@ class ConverterApp:
         for control in (self.original_preview_image, self.preview_image):
             if control.height != comparison_height:
                 control.height = comparison_height
-                if self.page_index == 0 and control in self._visible_preview_images():
+                if self.page_index == 0 and self.preview_card.visible and control in self._visible_preview_images():
                     resized_controls.append(control)
         if self.player_image.height != player_height:
             self.player_image.height = player_height
@@ -4200,7 +4269,7 @@ class ConverterApp:
 
     def _resize_editor_panels(self, width: float, height: float, compact: bool) -> bool:
         content_width = width - 40 - (1 if compact else 89)
-        split = content_width >= 960
+        split = content_width >= 960 and self.preview_card.visible and self.parameter_card.visible
         columns = 6 if split else 12
         changed = False
         for card in (self.preview_card, self.parameter_card):
